@@ -1,0 +1,187 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * The two palettes.
+ *
+ * Values are bare RGB channels, not colours, so Tailwind's opacity modifiers
+ * keep working — see the note in tailwind.config.ts.
+ *
+ * The dark values are not the light ones inverted. Pure white text on pure
+ * black is harsh and makes thin type shimmer, so the darkest surface is a very
+ * dark blue-grey and the brightest text stops short of white. Tint backgrounds
+ * (the -50 shades behind status chips) become deep, desaturated versions of
+ * their hue rather than pale ones, and the text that sits on them moves from
+ * the dark end of the scale to the light end so the pairing stays legible.
+ */
+:root {
+  --ink: 17 24 39;
+  --ink-soft: 107 114 128;
+  --ink-faint: 156 163 175;
+
+  --surface: 255 255 255;
+  --canvas: 250 250 250;
+  --line: 229 231 235;
+
+  --link: 11 91 85;
+  --shadow: 17 24 39;
+
+  --teal-50: 240 253 250;
+  --teal-100: 204 251 241;
+  --teal-200: 153 246 228;
+
+  --good-50: 236 253 245;
+  --warn-50: 255 247 237;
+
+  --amber-50: 255 251 235;
+  --amber-100: 254 243 199;
+  --amber-200: 253 230 138;
+  --amber-300: 252 211 77;
+  --amber-600: 180 83 9;
+  --amber-700: 180 83 9;
+  --amber-800: 146 64 14;
+  --amber-900: 120 53 15;
+
+  --emerald-50: 236 253 245;
+  --emerald-200: 167 243 208;
+  --emerald-300: 110 231 183;
+  --emerald-700: 4 120 87;
+  --emerald-800: 6 95 70;
+
+  --red-50: 254 242 242;
+  --red-100: 254 226 226;
+  --red-200: 254 202 202;
+  --red-600: 220 38 38;
+  --red-700: 185 28 28;
+  --red-800: 153 27 27;
+
+  --sky-50: 240 249 255;
+  --sky-700: 3 105 161;
+
+  --skeleton-from: 243 244 246;
+  --skeleton-via: 236 236 238;
+  --selection-bg: 204 251 241;
+  --selection-fg: 11 91 85;
+  --scrollbar: 229 231 235;
+
+  color-scheme: light;
+}
+
+.dark {
+  --ink: 230 237 243;
+  --ink-soft: 155 170 184;
+  --ink-faint: 110 125 139;
+
+  --surface: 22 27 34;
+  --canvas: 13 17 23;
+  --line: 45 56 68;
+
+  --link: 94 234 212;
+  /* Shadows are invisible on a dark surface; black is what reads as depth. */
+  --shadow: 0 0 0;
+
+  --teal-50: 8 42 40;
+  --teal-100: 12 55 51;
+  --teal-200: 20 78 71;
+
+  --good-50: 8 40 30;
+  --warn-50: 51 38 12;
+
+  --amber-50: 51 38 12;
+  --amber-100: 64 48 16;
+  --amber-200: 82 61 20;
+  --amber-300: 100 75 26;
+  --amber-600: 251 191 36;
+  --amber-700: 252 211 77;
+  --amber-800: 253 230 138;
+  --amber-900: 254 243 199;
+
+  --emerald-50: 8 40 30;
+  --emerald-200: 20 70 53;
+  --emerald-300: 28 92 68;
+  --emerald-700: 110 231 183;
+  --emerald-800: 167 243 208;
+
+  --red-50: 52 18 20;
+  --red-100: 66 23 25;
+  --red-200: 88 30 33;
+  --red-600: 248 113 113;
+  --red-700: 252 165 165;
+  --red-800: 254 202 202;
+
+  --sky-50: 12 34 48;
+  --sky-700: 125 211 252;
+
+  --skeleton-from: 30 37 46;
+  --skeleton-via: 38 46 56;
+  --selection-bg: 20 78 71;
+  --selection-fg: 230 237 243;
+  --scrollbar: 45 56 68;
+
+  /* Tells the browser to render its own chrome — scrollbars, form controls,
+     autofill — in dark. Without it a native <input> stays glaringly white. */
+  color-scheme: dark;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  background-color: rgb(var(--canvas));
+  color: rgb(var(--ink));
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background-color: rgb(var(--selection-bg));
+  color: rgb(var(--selection-fg));
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}
+
+/* Focus visibility */
+a:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid rgb(var(--link));
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+.nums {
+  font-family: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+.skeleton {
+  background: linear-gradient(
+    90deg,
+    rgb(var(--skeleton-from)) 25%,
+    rgb(var(--skeleton-via)) 37%,
+    rgb(var(--skeleton-from)) 63%
+  );
+  background-size: 400px 100%;
+}
+
+/* subtle scrollbar for horizontal comparison tables */
+.scrollbar-thin::-webkit-scrollbar {
+  height: 8px;
+}
+.scrollbar-thin::-webkit-scrollbar-thumb {
+  background: rgb(var(--scrollbar));
+  border-radius: 8px;
+}
+.scrollbar-thin::-webkit-scrollbar-track {
+  background: transparent;
+}
