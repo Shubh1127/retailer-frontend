@@ -9,7 +9,7 @@ import { suppliers, supplierById, eur } from "@/lib/mock-data";
 import { searchCompare } from "@/lib/api/endpoint";
 import { ApiError } from "@/lib/api/client";
 import { cheapestSupplierId, supplierLabel } from "@/lib/compare-utils";
-import type { CompareRow } from "@/lib/api/types";
+import type { CompareRow, ProductInfo } from "@/lib/api/types";
 
 const DEBOUNCE_MS = 350;
 
@@ -193,15 +193,13 @@ export default function ComparePage() {
                   return (
                     <div key={row.product.unitGtin} className="rounded-xl border border-line bg-surface p-4 shadow-card">
                       <div className="flex gap-3">
-                        <ProductGlyph department={row.product.category ?? "General"} />
+                        <ProductThumb product={row.product} />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-start justify-between gap-2">
                             <p className="truncate text-[13.5px] font-medium text-ink">{row.product.name}</p>
                             {lineStatus && <LineStatusBadge status={lineStatus} />}
                           </div>
-                          <p className="text-[12px] text-ink-soft">
-                            {row.product.brand} · {row.product.packSize ?? row.product.unitGtin}
-                          </p>
+                          <ProductMeta product={row.product} className="text-[12px] text-ink-soft" />
                           <div className="mt-2 flex items-end justify-between">
                             <div>
                               <p className="nums text-[18px] font-semibold text-ink">
@@ -265,12 +263,13 @@ export default function ComparePage() {
                         <tr key={row.product.unitGtin} className="border-b border-line last:border-0 hover:bg-canvas/40">
                           <td className="sticky left-0 z-10 bg-surface px-4 py-3.5">
                             <div className="flex items-center gap-3">
-                              <ProductGlyph department={row.product.category ?? "General"} size={36} />
-                              <div>
+                              <ProductThumb product={row.product} size={36} />
+                              <div className="min-w-0">
                                 <p className="text-[13px] font-medium text-ink">{row.product.name}</p>
-                                <p className="text-[11.5px] text-ink-soft">
-                                  {row.product.brand} · {row.product.packSize ?? row.product.unitGtin}
-                                </p>
+                                <ProductMeta
+                                  product={row.product}
+                                  className="text-[11.5px] text-ink-soft"
+                                />
                               </div>
                             </div>
                           </td>
@@ -331,14 +330,15 @@ export default function ComparePage() {
                 <div className="mt-8 rounded-xl border border-line bg-surface p-5 shadow-card">
                   <div className="flex flex-wrap items-start justify-between gap-4">
                     <div className="flex items-center gap-3">
-                      <ProductGlyph department={firstRow.product.category ?? "General"} size={52} />
+                      <ProductThumb product={firstRow.product} size={52} />
                       <div>
                         <p className="text-[15px] font-semibold text-ink">{firstRow.product.name}</p>
-                        <p className="text-[12.5px] text-ink-soft">
-                          GTIN {firstRow.product.unitGtin}
-                          {firstRow.product.packSize ? ` · ${firstRow.product.packSize}` : ""}
-                          {firstRow.product.category ? ` · ${firstRow.product.category}` : ""}
-                        </p>
+                        {/* Was "GTIN {unitGtin}" — the same number, but a buyer
+                            checking a shelf edge is looking for an EAN. */}
+                        <ProductMeta product={firstRow.product} className="text-[12.5px] text-ink-soft" />
+                        {firstRow.product.category && (
+                          <p className="text-[12px] text-ink-faint">{firstRow.product.category}</p>
+                        )}
                       </div>
                     </div>
                     {deriveStatus(firstRow, firstRowChosen) && (
@@ -428,6 +428,76 @@ export default function ComparePage() {
         </div>
       </div>
     </AppShell>
+  );
+}
+
+/**
+ * The supplier's own photo, falling back to the department glyph.
+ *
+ * Three absences collapse into one picture: a supplier that publishes no image,
+ * a URL that 404s, and a product neither supplier had a photo for. All of them
+ * end at the coloured glyph rather than a broken-image icon or an empty box —
+ * a hole in the grid reads as the page being broken, which is a worse lie than
+ * a placeholder.
+ */
+function ProductThumb({
+  product,
+  size = 44,
+}: {
+  product: ProductInfo;
+  size?: number;
+}) {
+  const [failed, setFailed] = useState(false);
+
+  if (!product.imageUrl || failed) {
+    return <ProductGlyph department={product.category ?? "General"} size={size} />;
+  }
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={product.imageUrl}
+      alt={product.name}
+      style={{ width: size, height: size }}
+      onError={() => setFailed(true)}
+      className="shrink-0 rounded-lg border border-line bg-white object-contain"
+      loading="lazy"
+    />
+  );
+}
+
+/**
+ * The line under the product name: brand, pack, barcode.
+ *
+ * Built in one place so the card, the table and the drawer cannot disagree.
+ * Every part is optional and empties are dropped, so a product missing a brand
+ * does not render a leading separator.
+ *
+ * `ean` falls back to `unitGtin` because they are the same number — the backend
+ * has always sent the barcode as `unitGtin` and only recently named it `ean`,
+ * so this keeps working against a backend that predates the field.
+ */
+function ProductMeta({ product, className = "" }: { product: ProductInfo; className?: string }) {
+  const barcode = product.ean || product.unitGtin;
+
+  const parts = [
+    product.brand || undefined,
+    product.packSize || undefined,
+    barcode ? `EAN ${barcode}` : undefined,
+  ].filter(Boolean) as string[];
+
+  if (parts.length === 0) return null;
+
+  return (
+    <p className={className}>
+      {parts.map((part, i) => (
+        <span key={part}>
+          {i > 0 && <span className="text-ink-faint"> · </span>}
+          {/* Tabular figures so barcodes line up down the column. */}
+          <span className={part.startsWith("EAN ") ? "nums" : ""}>{part}</span>
+        </span>
+      ))}
+    </p>
   );
 }
 

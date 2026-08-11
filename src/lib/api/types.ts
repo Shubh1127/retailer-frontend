@@ -16,9 +16,17 @@
 export interface ProductInfo {
   name: string;
   brand: string;
+  /**
+   * The retail unit barcode. Same value as `ean` — both suppliers set it from
+   * the card's EAN text — kept because the allocation engine keys on it.
+   */
   unitGtin: string;
+  /** The barcode, under the name a buyer recognises. Prefer this on screen. */
+  ean?: string;
   category?: string;
+  /** e.g. "24 × 330ml". Absent when neither supplier stated a readable pack. */
   packSize?: string;
+  /** Absolute thumbnail URL. Absent for suppliers that publish no image. */
   imageUrl?: string;
 }
 
