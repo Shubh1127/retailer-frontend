@@ -433,6 +433,16 @@ function WaitingPanel({
         close it and come back — the request is remembered in this browser.
       </p>
 
+      {/* Shown to EVERYONE waiting, never only to addresses that turn out to be
+          registered. Someone who already has an account and forgot ends up on
+          exactly this screen, and this is the line that rescues them — but the
+          moment it appears conditionally it becomes a way to ask the server
+          which addresses exist. */}
+      <p className="mt-1.5">
+        Already signed up before? You may already have an account — try signing
+        in instead.
+      </p>
+
       <div className="mt-2.5 flex items-center gap-3">
         <button
           type="button"
