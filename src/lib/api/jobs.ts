@@ -92,6 +92,26 @@ export interface ReadyToOrderRow {
     by?: string;
     differsFromRequest: boolean;
   };
+  /**
+   * Set when both suppliers published the SAME barcode for this line.
+   *
+   * An IDENTITY claim only: two independent catalogues published the same GS1
+   * number, so it is the same retail product. It says nothing about the pack —
+   * one barcode can cover a display unit and a single box at different
+   * suppliers — so pack differences still appear in `warnings` and are still
+   * what commercial equivalence decides.
+   */
+  eanConfirmed?: {
+    /** The canonical GTIN-14 both suppliers agreed on. */
+    gtin14: string;
+    /** Each supplier's own code and its own spelling of the barcode. */
+    suppliers: {
+      supplier: string;
+      supplierName: string;
+      sku?: string;
+      ean?: string;
+    }[];
+  };
   detail: ProductDetail;
 }
 
@@ -172,6 +192,87 @@ export type RowDecision =
  * Returns null when the override cannot be ordered from — a decision without a
  * supplier and SKU is a record, not something a basket can act on.
  */
+/**
+ * Apply a confirmation to a line the pipeline ALREADY matched.
+ *
+ * `settledAsReadyRow` builds a ready row out of an attention row; this rewrites
+ * one that already exists. Both are needed, because an admin can confirm either
+ * kind and the two arrive by different routes.
+ *
+ * Without this, confirming an already-matched line did nothing visible: the
+ * override was stored, returned by the API, and then ignored, so the row kept
+ * showing whatever the matcher picked. `processed_products` is written once
+ * when the job runs and never rewritten — so the merge has to happen here, at
+ * the read boundary, or not at all.
+ *
+ * The pipeline's own verdict is deliberately NOT discarded. Its offers stay in
+ * `detail.offers`, so the panel can still show what else was available and at
+ * what price — which is exactly how a buyer notices that a pinned line costs
+ * more than an alternative.
+ */
+export function confirmedOverReadyRow(
+  row: ReadyToOrderRow,
+  override: JobRowOverride,
+  supplierName: string,
+): ReadyToOrderRow {
+  if (override.action !== "confirmed") return row;
+  if (!override.supplier || !override.supplierSku) return row;
+
+  // Already the chosen supplier and code — the admin confirmed what the matcher
+  // had picked, so there is nothing to rewrite and the pipeline's richer record
+  // (savings, warnings, offers) is worth keeping intact.
+  if (
+    override.supplier === row.bestSupplier &&
+    override.supplierSku === row.detail.selected?.sku
+  ) {
+    return row;
+  }
+
+  const selected = {
+    supplier: override.supplier,
+    supplierName,
+    product: override.supplierProduct ?? override.supplierSku,
+    sku: override.supplierSku,
+    ...(override.priceExVat !== undefined
+      ? { exVatCasePrice: override.priceExVat }
+      : {}),
+    ...(override.ean ? { ean: override.ean } : {}),
+    ...(override.imageUrl ? { imageUrl: override.imageUrl } : {}),
+    ...(override.unitsPerCase !== undefined
+      ? { unitsPerCase: override.unitsPerCase }
+      : {}),
+    ...(override.unitSize !== undefined ? { unitSize: override.unitSize } : {}),
+    ...(override.uom ? { uom: override.uom } : {}),
+  };
+
+  return {
+    ...row,
+    bestSupplier: override.supplier,
+    bestSupplierName: supplierName,
+    price: override.priceExVat ?? row.price,
+    // The saving was computed against a supplier nobody is buying from now.
+    // Reporting it against the admin's choice would be inventing a comparison
+    // that never happened, so it reverts to "no baseline".
+    savingsStatus: "no-baseline",
+    savings: undefined,
+    savingsPct: undefined,
+    adminConfirmed: {
+      supplier: override.supplier,
+      supplierSku: override.supplierSku,
+      ...(override.createdByEmail ? { by: override.createdByEmail } : {}),
+      // Whether it matches the FILE is a question the pipeline answered about a
+      // different product; it cannot be carried across to this one.
+      differsFromRequest: false,
+    },
+    detail: {
+      ...row.detail,
+      selected,
+      // The matcher's offers are kept — that is what lets the panel say
+      // "O'Reilly lists it at less".
+    },
+  };
+}
+
 export function settledAsReadyRow(
   row: NeedsAttentionRow,
   override: JobRowOverride,
@@ -214,9 +315,42 @@ export function settledAsReadyRow(
         ...(override.priceExVat !== undefined
           ? { exVatCasePrice: override.priceExVat }
           : {}),
+        // The rest of the product, recorded at confirm time. A promoted line
+        // sits in the same table as matched ones, so it needs the same
+        // furniture — a picture and a pack — or it reads as a broken row.
+        // Each is absent rather than blank when the supplier published none:
+        // "no image" and "image failed" already render identically.
+        ...(override.ean ? { ean: override.ean } : {}),
+        ...(override.imageUrl ? { imageUrl: override.imageUrl } : {}),
+        ...(override.unitsPerCase !== undefined
+          ? { unitsPerCase: override.unitsPerCase }
+          : {}),
+        ...(override.unitSize !== undefined ? { unitSize: override.unitSize } : {}),
+        ...(override.uom ? { uom: override.uom } : {}),
       },
       alternatives: [],
-      offers: [],
+      // The one offer there is. Populated so the row renders its supplier and
+      // price through the same path as a matched line rather than a special
+      // case — an empty `offers` was why the promoted row showed no price
+      // column at all.
+      offers: [
+        {
+          supplier: override.supplier,
+          supplierName,
+          product: override.supplierProduct ?? override.supplierSku,
+          sku: override.supplierSku,
+          ...(override.priceExVat !== undefined
+            ? { exVatCasePrice: override.priceExVat }
+            : {}),
+          ...(override.ean ? { ean: override.ean } : {}),
+          ...(override.imageUrl ? { imageUrl: override.imageUrl } : {}),
+          ...(override.unitsPerCase !== undefined
+            ? { unitsPerCase: override.unitsPerCase }
+            : {}),
+          ...(override.unitSize !== undefined ? { unitSize: override.unitSize } : {}),
+          ...(override.uom ? { uom: override.uom } : {}),
+        },
+      ],
     },
   };
 }
@@ -311,6 +445,16 @@ export interface JobRowOverride {
   jobId: string;
   rowNumber: number;
   action: "confirmed" | "removed";
+  /**
+   * The product the admin chose, as they saw it. Carried so a promoted line
+   * shows a picture, a pack and a price like the matched lines beside it —
+   * without these it arrived as a bare name and looked broken.
+   */
+  ean?: string;
+  imageUrl?: string;
+  unitsPerCase?: number;
+  unitSize?: number;
+  uom?: string;
   supplier?: string;
   supplierSku?: string;
   supplierProduct?: string;
@@ -327,6 +471,15 @@ export async function getJobRows(jobId: string): Promise<{
   needsAttention: NeedsAttentionRow[];
   /** Standing admin decisions, keyed by row number. */
   overrides?: Record<number, JobRowOverride>;
+  /**
+   * Whether this job can still change.
+   *
+   * Nothing on the retailer's side edits a job, so this is not a permission —
+   * it answers "is anyone still working on this". A closed job will never
+   * change again, so the page can say so and stop polling for an update that
+   * cannot arrive.
+   */
+  lock?: { locked: boolean; code?: "in-cart" | "expired"; reason?: string };
 }> {
   const res = await fetch(url(`/api/jobs/${jobId}/rows`), {
     headers: await authHeaders(),

@@ -19,6 +19,7 @@ import {
   downloadReport,
   eur,
   getJobRows,
+  confirmedOverReadyRow,
   settledAsReadyRow,
   type JobRowOverride,
   type JobSummary,
@@ -58,6 +59,11 @@ export default function JobDetailsPage({
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [overrides, setOverrides] = useState<Record<number, JobRowOverride>>({});
+  const [lock, setLock] = useState<{
+    locked: boolean;
+    code?: "in-cart" | "expired";
+    reason?: string;
+  } | null>(null);
 
   // Synced from the SUPPLIER on mount, so a row shows "In Cart" because
   // Musgrave says so — not because this page remembers adding it.
@@ -74,6 +80,7 @@ export default function JobDetailsPage({
       setReady(data.readyToOrder ?? []);
       setAttention(data.needsAttention ?? []);
       setOverrides(data.overrides ?? {});
+      setLock(data.lock ?? null);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load this job");
@@ -84,7 +91,42 @@ export default function JobDetailsPage({
 
   useEffect(() => {
     void load();
-  }, [load]);
+
+    /**
+     * Re-read while the page is open, so an admin settling a line shows up here
+     * without the retailer being told to refresh.
+     *
+     * Polling rather than SSE. The job stream this page already uses exists to
+     * follow a run in progress and closes when the run finishes; an admin
+     * confirms a line long after that, so there is no open channel to push
+     * down. A poll needs no new endpoint, no reconnect handling, and no
+     * server-side fan-out to every viewer of a finished job.
+     *
+     * Fifteen seconds because the thing being waited on is a person clicking
+     * Confirm in another tab — faster buys nothing a human would notice, and
+     * `getJobRows` reads a stored job plus one override lookup.
+     *
+     * Paused when the tab is hidden. A dashboard left open overnight would
+     * otherwise poll several thousand times to learn nothing, and the visible
+     * refresh on re-focus is what someone returning to the tab actually wants.
+     */
+    const REFRESH_MS = 15_000;
+
+    const tick = () => {
+      // A closed job cannot change again, so polling it is asking a question
+      // that already has a final answer.
+      if (lock?.locked) return;
+      if (document.visibilityState === "visible") void load();
+    };
+
+    const timer = setInterval(tick, REFRESH_MS);
+    document.addEventListener("visibilitychange", tick);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", tick);
+    };
+  }, [load, lock?.locked]);
 
   /**
    * The lines still genuinely waiting on somebody.
@@ -138,8 +180,34 @@ export default function JobDetailsPage({
       )
       .filter((row): row is ReadyToOrderRow => row !== null);
 
-    return [...ready, ...promoted].sort((a, b) => a.row - b.row);
-  }, [ready, adminSettled]);
+    // A line an admin REMOVED must not stay orderable. `attention` rows already
+    // drop out via `outstanding`, but matched rows come straight from the
+    // pipeline, which never hears about the removal — so a row struck off an
+    // hour ago would otherwise still be swept into a basket by "Add All".
+    const kept = ready
+      .filter((row) => overrides[row.row]?.action !== "removed")
+      // A confirmation against an ALREADY-matched line has to be applied here
+      // too. `processed_products` is written once when the job runs and never
+      // rewritten, so without this the override was stored, returned, and then
+      // ignored — clicking Confirm changed nothing on the screen that showed it.
+      .map((row) => {
+        const override = overrides[row.row];
+        if (override?.action !== "confirmed") return row;
+        return confirmedOverReadyRow(
+          row,
+          override,
+          supplierLabel(override.supplier ?? ""),
+        );
+      });
+
+    return [...kept, ...promoted].sort((a, b) => a.row - b.row);
+  }, [ready, adminSettled, overrides]);
+
+  /** Lines an admin struck off, in either table. Shown so they do not just vanish. */
+  const removedCount = useMemo(
+    () => Object.values(overrides).filter((entry) => entry.action === "removed").length,
+    [overrides],
+  );
 
   const visibleReady = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -151,9 +219,17 @@ export default function JobDetailsPage({
     );
   }, [orderable, query]);
 
+  /**
+   * Savings over what is ACTUALLY orderable, not over the pipeline's raw list.
+   *
+   * `ready` still contains lines an admin removed, so totalling it claimed a
+   * saving on stock nobody is buying. Promoted lines contribute nothing —
+   * the pipeline never produced a competing match for them, so there is no
+   * baseline to have saved against, and inventing one would overstate this.
+   */
   const totalSavings = useMemo(
-    () => ready.reduce((sum, row) => sum + (row.savings ?? 0) * row.cases, 0),
-    [ready],
+    () => orderable.reduce((sum, row) => sum + (row.savings ?? 0) * row.cases, 0),
+    [orderable],
   );
 
   const duration = useMemo(() => {
@@ -216,15 +292,40 @@ export default function JobDetailsPage({
             >
               Download report
             </button>
+            {lock?.locked && (
+              <span
+                className="ml-3 inline-flex items-center gap-1.5 rounded-md border border-line bg-canvas px-2.5 py-1.5 text-[12px] text-ink-soft"
+                title={lock.reason}
+              >
+                <span aria-hidden="true">🔒</span>
+                {lock.code === "in-cart"
+                  ? "Sent to a supplier basket"
+                  : "Final — kept as a record"}
+              </span>
+            )}
           </div>
 
           <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            {/* Counted from the rows on screen, NOT from the stored summary.
+                `summary.readyProducts` and `needsAttentionProducts` are what the
+                pipeline decided at upload time and are never recomputed, so
+                after an admin settles a line they disagree with the tables
+                below them — and with the tab counts, which have always been
+                derived. The stored figures remain the honest record of what the
+                MATCHER achieved; these tiles report where the job stands now.
+
+                `Products` stays the file's own total: 213 lines were uploaded
+                whatever anyone did to them afterwards. When removals mean the
+                two tables no longer add up to it, the Removed tile says why. */}
+            {/* Not a permission — nothing here edits a job. It answers "is
+                anyone still working on this", which is the question a retailer
+                looking at unresolved lines is actually asking. */}
             <Stat label="Products" value={String(summary.totalProducts)} />
-            <Stat label="Matched" value={String(summary.readyProducts)} />
-            <Stat
-              label="Needs attention"
-              value={String(summary.needsAttentionProducts)}
-            />
+            <Stat label="Matched" value={String(orderable.length)} />
+            <Stat label="Needs attention" value={String(outstanding.length)} />
+            {removedCount > 0 && (
+              <Stat label="Removed" value={String(removedCount)} />
+            )}
             <Stat label="Est. saving" value={eur(totalSavings)} />
             <Stat label="Started" value={clockOf(summary.startedAt)} />
             <Stat label="Duration" value={duration} />

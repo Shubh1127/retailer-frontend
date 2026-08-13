@@ -374,6 +374,121 @@ function ProductDetailModal({
             </div>
           </div>
 
+          {/* Why THIS supplier, when a cheaper one is listed below.
+              An admin confirmation narrows `chooseBestSupplier`'s pool to the
+              product a person approved, so price stops deciding. That is
+              deliberate — it stops the matcher quietly buying a different
+              listing than the one someone settled by hand — but with nothing on
+              screen saying so, the panel shows a dearer supplier selected above
+              a cheaper one and looks like a bug. */}
+          {row.adminConfirmed && (
+            <div className="mt-5 rounded-lg border border-sky-200 bg-sky-50/70 px-3.5 py-3">
+              <div className="flex items-center gap-1.5">
+                <span aria-hidden="true" className="text-sky-700">
+                  ●
+                </span>
+                <span className="text-[12.5px] font-medium text-sky-800">
+                  Chosen by an administrator
+                </span>
+              </div>
+
+              <p className="mt-1 text-[11.5px] text-sky-900/80">
+                This line is pinned to{" "}
+                <span className="font-medium">
+                  {row.bestSupplierName} · SKU {row.adminConfirmed.supplierSku}
+                </span>
+                {row.adminConfirmed.by ? ` by ${row.adminConfirmed.by}` : ""}, so it
+                was not chosen on price. Every future file naming this product
+                will use the same one until an administrator changes it.
+              </p>
+
+              {/* Named explicitly rather than left for the reader to spot in the
+                  list below. A pinned line costing more than an available
+                  alternative is exactly the thing worth revisiting. */}
+              {(() => {
+                const cheaper = row.detail.offers
+                  .filter(
+                    (offer) =>
+                      offer.supplier !== row.bestSupplier &&
+                      typeof offer.exVatCasePrice === "number" &&
+                      offer.exVatCasePrice < row.price,
+                  )
+                  .sort(
+                    (a, b) => (a.exVatCasePrice ?? 0) - (b.exVatCasePrice ?? 0),
+                  )[0];
+
+                if (!cheaper) return null;
+
+                return (
+                  <p className="mt-1.5 text-[11.5px] font-medium text-sky-900">
+                    {cheaper.supplierName} lists it at {eur(cheaper.exVatCasePrice)} —{" "}
+                    {eur(row.price - (cheaper.exVatCasePrice ?? 0))} less per case.
+                    Re-confirm the line to switch.
+                  </p>
+                );
+              })()}
+            </div>
+          )}
+
+          {/* The barcode agreement behind the match.
+              Deliberately worded as identity and nothing more: both suppliers
+              published this GS1 number, so it is the same retail product. It
+              does NOT say the packs are the same — one barcode can cover a
+              display unit at one supplier and a single box at another — so the
+              pack caveats stay where they are, in `warnings`. */}
+          {row.eanConfirmed && (
+            <div className="mt-5 rounded-lg border border-emerald-200 bg-emerald-50/60 px-3.5 py-3">
+              <div className="flex items-center gap-1.5">
+                <span aria-hidden="true" className="text-emerald-700">
+                  ✓
+                </span>
+                <span className="text-[12.5px] font-medium text-emerald-800">
+                  Barcode confirmed at both suppliers
+                </span>
+              </div>
+
+              <p className="mt-1 text-[11.5px] text-emerald-900/80">
+                Both catalogues publish the same barcode for this product, so
+                the identity is certain. Pack sizes can still differ — check any
+                warnings above.
+              </p>
+
+              <dl className="mt-2.5 space-y-1.5">
+                <div className="flex items-baseline gap-2">
+                  <dt className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-emerald-900/60">
+                    GTIN-14
+                  </dt>
+                  <dd className="nums text-[12.5px] font-medium text-ink">
+                    {row.eanConfirmed.gtin14}
+                  </dd>
+                </div>
+
+                {row.eanConfirmed.suppliers.map((entry) => (
+                  <div key={entry.supplier} className="flex items-baseline gap-2">
+                    <dt className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-emerald-900/60">
+                      {entry.supplierName}
+                    </dt>
+                    <dd className="text-[12.5px] text-ink">
+                      {entry.sku ? (
+                        <span className="nums">SKU {entry.sku}</span>
+                      ) : (
+                        <span className="text-ink-faint">no code</span>
+                      )}
+                      {/* Each supplier's OWN spelling. Musgrave may publish 13
+                          digits where O'Reilly publishes 14 for one product,
+                          and that is what each portal will show. */}
+                      {entry.ean && (
+                        <span className="ml-2 text-ink-soft">
+                          · EAN <span className="nums">{entry.ean}</span>
+                        </span>
+                      )}
+                    </dd>
+                  </div>
+                ))}
+              </dl>
+            </div>
+          )}
+
           {row.detail.offers.length > 1 && (
             <>
               <div className="mt-5 text-[11px] uppercase tracking-wide text-ink-faint">
@@ -1032,6 +1147,29 @@ export default function DashboardPage() {
                           <div className="text-[11.5px] text-ink-faint">
                             {row.detail.selected?.product}
                           </div>
+                          {/* Identity, not pack. Shown alongside any warning
+                              rather than instead of it: a line can be barcode
+                              confirmed AND have a pack caveat, and hiding the
+                              caveat behind the tick would be the wrong half. */}
+                          {row.eanConfirmed && (
+                            <div
+                              className="mt-0.5 inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] text-emerald-700"
+                              title={
+                                `Both suppliers publish barcode ${row.eanConfirmed.gtin14} ` +
+                                `for this product:\n` +
+                                row.eanConfirmed.suppliers
+                                  .map(
+                                    (entry) =>
+                                      `${entry.supplierName}: ${entry.sku ?? "no code"}` +
+                                      (entry.ean ? ` (EAN ${entry.ean})` : ""),
+                                  )
+                                  .join("\n") +
+                                `\n\nIdentity only — pack sizes can still differ.`
+                              }
+                            >
+                              ✓ Barcode confirmed
+                            </div>
+                          )}
                           {row.warnings.length > 0 && (
                             <div
                               className="mt-0.5 inline-flex items-center gap-1 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] text-amber-700"
