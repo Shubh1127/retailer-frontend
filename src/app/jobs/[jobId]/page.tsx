@@ -20,16 +20,29 @@ import {
   eur,
   getJobRows,
   confirmedOverReadyRow,
+  removedAsAttentionRow,
   settledAsReadyRow,
+  verifyJobRows,
   type JobRowOverride,
   type JobSummary,
   type NeedsAttentionRow,
   type ReadyToOrderRow,
+  type RowVerification,
 } from "@/lib/api/jobs";
 import { supplierLabel } from "@/lib/api/cart";
 import ProductImage from "@/components/ProductImage";
 
 type Tab = "ready" | "attention";
+
+/**
+ * How many rows go in one verify request.
+ *
+ * Matches the backend's own cap (`MAX_VERIFY_ROWS`). Sending more is rejected
+ * outright rather than truncated, so this is not a tuning knob — it is the
+ * contract, and raising it here without raising it there turns a long check
+ * into a 400.
+ */
+const VERIFY_BATCH = 25;
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
@@ -65,9 +78,38 @@ export default function JobDetailsPage({
     reason?: string;
   } | null>(null);
 
+  /**
+   * A DIFFERENT LOCK from the one above, and the one that governs Add to Cart.
+   *
+   * Editing asks "is this record still being worked on" — a day. Ordering asks
+   * "are these prices still real" — three hours. A job can be wide open and
+   * completely unorderable, and this page previously knew only the first, so a
+   * refused add arrived as a 409 it had no way to have predicted.
+   */
+  const [cartLock, setCartLock] = useState<{
+    locked: boolean;
+    code?: "expired";
+    reason?: string;
+  } | null>(null);
+
+  const [recordOnly, setRecordOnly] = useState(false);
+  const [verifications, setVerifications] = useState<Record<number, RowVerification>>({});
+  const [verifyingRows, setVerifyingRows] = useState<number[]>([]);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [verifyProgress, setVerifyProgress] = useState<{
+    completed: number;
+    total: number;
+  } | null>(null);
+
   // Synced from the SUPPLIER on mount, so a row shows "In Cart" because
   // Musgrave says so — not because this page remembers adding it.
-  const cart = useCart();
+  //
+  // The job id goes with every add: without it the backend cannot tell an add
+  // from this table apart from a manual one, and the price lock never fires on
+  // the path it exists to protect.
+  const cart = useCart(jobId);
+
+
 
   // From ALL ready rows, not the filtered view — columns must not appear and
   // disappear as somebody types in the search box.
@@ -81,6 +123,9 @@ export default function JobDetailsPage({
       setAttention(data.needsAttention ?? []);
       setOverrides(data.overrides ?? {});
       setLock(data.lock ?? null);
+      setCartLock(data.cartLock ?? null);
+      setRecordOnly(data.recordOnly === true);
+      setVerifications(data.verifications ?? {});
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load this job");
@@ -88,6 +133,92 @@ export default function JobDetailsPage({
       setIsLoading(false);
     }
   }, [jobId]);
+
+  /**
+   * Re-check the named lines, then show what came back.
+   *
+   * Owned by the PAGE rather than by the cart or a row, because more than one
+   * control starts it — the per-row button and the "check them all" prompt on
+   * the add bar — and both have to see the same in-flight state or the page
+   * offers two buttons for one job of work.
+   *
+   * The verifications are applied from the response rather than by re-fetching:
+   * a reload here would race the write that just happened and could show the
+   * row as still unchecked immediately after checking it.
+   */
+  /**
+   * This job is more than a day old and is kept as a record.
+   *
+   * Taken from the backend's own `recordOnly`, not derived here. The obvious
+   * derivation — `lock.code === "expired"` — is wrong: `jobEditLock` reports
+   * `in-cart` before it ever looks at the clock, so a four-day-old job whose
+   * lines reached a basket reads as `in-cart` and the order controls would come
+   * straight back on exactly the sort of job they must not appear on.
+   */
+  const isRecord = recordOnly === true;
+
+  const verify = useCallback(
+    async (rows: number[]) => {
+      if (rows.length === 0) return;
+      setVerifyingRows(rows);
+      setVerifyError(null);
+      setVerifyProgress({ completed: 0, total: rows.length });
+
+      const failures: string[] = [];
+
+      try {
+        // BATCHED, because the backend caps one request at 25 rows and checks
+        // them sequentially — each is a live request to a trade account, and
+        // firing a hundred at once is how an account gets rate-limited off the
+        // supplier's site. Sending 200 in one call would simply be rejected.
+        //
+        // Batching is also what makes progress real: the retailer sees the
+        // count move every 25 rows instead of watching a spinner for two
+        // minutes and concluding the page has hung.
+        for (let start = 0; start < rows.length; start += VERIFY_BATCH) {
+          const batch = rows.slice(start, start + VERIFY_BATCH);
+          const outcome = await verifyJobRows(jobId, batch);
+
+          // Applied per batch, so rows unlock as they clear rather than all at
+          // the end. On a long run that is the difference between a page that
+          // is working and a page that is frozen.
+          setVerifications((current) => {
+            const next = { ...current };
+            for (const result of outcome.results) {
+              if (result.verification) next[result.rowNumber] = result.verification;
+            }
+            return next;
+          });
+
+          // A line that could not be checked AT ALL — supplier unreachable,
+          // the line removed — is a different thing from one that was checked
+          // and failed. The second shows on its own row; only the first needs
+          // saying here, because there is nothing on the row to show for it.
+          for (const result of outcome.results) {
+            if (result.error) failures.push(`Row ${result.rowNumber}: ${result.error}`);
+          }
+
+          setVerifyProgress({
+            completed: Math.min(start + batch.length, rows.length),
+            total: rows.length,
+          });
+        }
+
+        setVerifyError(failures.length > 0 ? failures.join(" · ") : null);
+      } catch (err) {
+        // Whatever completed before this stays applied — the state above is
+        // written per batch, so a failure halfway through keeps the rows that
+        // already cleared rather than discarding the supplier work done.
+        setVerifyError(
+          err instanceof Error ? err.message : "Could not check these products",
+        );
+      } finally {
+        setVerifyingRows([]);
+        setVerifyProgress(null);
+      }
+    },
+    [jobId],
+  );
 
   useEffect(() => {
     void load();
@@ -136,10 +267,25 @@ export default function JobDetailsPage({
    * merge happens here — otherwise a line that was sorted out days ago keeps
    * presenting itself as outstanding work every time this page is opened.
    */
-  const outstanding = useMemo(
-    () => attention.filter((row) => overrides[row.row] === undefined),
-    [attention, overrides],
-  );
+  const outstanding = useMemo(() => {
+    const waiting = attention.filter((row) => overrides[row.row] === undefined);
+
+    // Plus the matched lines an admin rejected. Removing the product does not
+    // remove the line — the file still asks for the article — so it belongs
+    // here, waiting on somebody to pick a different product. Before this it
+    // simply disappeared off the page: not orderable, not outstanding, not
+    // anywhere.
+    const rejected = ready
+      .map((row) => ({ row, override: overrides[row.row] }))
+      .filter(
+        (entry): entry is { row: ReadyToOrderRow; override: JobRowOverride } =>
+          entry.override?.action === "removed",
+      )
+      .map(({ row, override }) => removedAsAttentionRow(row, override))
+      .filter((row): row is NeedsAttentionRow => row !== null);
+
+    return [...waiting, ...rejected].sort((a, b) => a.row - b.row);
+  }, [attention, ready, overrides]);
 
   const visibleAttention = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -303,7 +449,62 @@ export default function JobDetailsPage({
                   : "Final — kept as a record"}
               </span>
             )}
+
+            {/* SEPARATE from the badge above, and it says a different thing.
+                "Final — kept as a record" is about editing; this is about
+                ordering, and only this one explains why the Add buttons are
+                asking for a price check first.
+
+                Suppressed once the job is a record: at that point checking is
+                not offered either, so promising it would be a badge pointing
+                at a button that is not there. */}
+            {cartLock?.locked && !isRecord && (
+              <span
+                className="ml-1 inline-flex items-center gap-1.5 rounded-md border border-amber-300 bg-amber-50 px-2.5 py-1.5 text-[12px] text-amber-800"
+                title={cartLock.reason}
+              >
+                <span aria-hidden="true">⏱</span>
+                Prices need re-checking before ordering
+              </span>
+            )}
           </div>
+
+          {/* Stated once, in full, rather than only as a tooltip on a badge.
+              A retailer whose Add buttons have gone quiet deserves the reason
+              on the page rather than on hover. */}
+          {isRecord ? (
+            <div className="mb-4 rounded-lg border border-line bg-canvas px-4 py-2.5 text-[12.5px] text-ink-soft">
+              <strong className="font-medium text-ink">
+                This job is kept as a record.
+              </strong>{" "}
+              It finished more than a day ago, so its prices are no longer worth
+              re-checking line by line and nothing here can be ordered.{" "}
+              <Link href="/dashboard" className="text-teal-700 underline">
+                Upload the file again
+              </Link>{" "}
+              to buy these products at current prices — that re-reads every line properly
+              in about the time a handful of checks would have taken.
+            </div>
+          ) : (
+            cartLock?.locked && (
+              <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-[12.5px] text-amber-900">
+                <strong className="font-medium">Why Add to Cart is asking first:</strong>{" "}
+                {cartLock.reason} Use <strong>Check prices</strong> above — it asks each
+                supplier what these products cost right now, and unlocks the ones that
+                are unchanged. Editing this job is a separate matter and follows its own
+                24-hour rule.
+              </div>
+            )
+          )}
+
+          {/* A line that could not be checked at all — the supplier was
+              unreachable, or the line was removed. A check that RAN and failed
+              is reported on its own row instead, where the change is. */}
+          {verifyError && (
+            <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-[12.5px] text-red-700">
+              {verifyError}
+            </div>
+          )}
 
           <div className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
             {/* Counted from the rows on screen, NOT from the stored summary.
@@ -418,7 +619,19 @@ export default function JobDetailsPage({
             />
           )}
 
-          {tab === "ready" && <CartBar rows={orderable} cart={cart} />}
+          {tab === "ready" && (
+            <CartBar
+              rows={orderable}
+              cart={cart}
+              jobId={jobId}
+              onVerify={verify}
+              isVerifying={verifyingRows.length > 0}
+              verifyProgress={verifyProgress}
+              verifications={verifications}
+              cartLocked={cartLock?.locked === true}
+              isRecord={isRecord}
+            />
+          )}
 
           <div className="overflow-hidden rounded-xl border border-line bg-surface">
             <div className="overflow-x-auto">
@@ -499,7 +712,14 @@ export default function JobDetailsPage({
                           )}
                         </td>
                         <td className="px-3 py-2">
-                          <CartCell row={row} cart={cart} />
+                          <CartCell
+                            row={row}
+                            cart={cart}
+                            verification={verifications[row.row]}
+                            cartLocked={cartLock?.locked === true}
+                            isRecord={isRecord}
+                            isVerifying={verifyingRows.includes(row.row)}
+                          />
                         </td>
                       </tr>
                     ))}

@@ -24,9 +24,16 @@ export interface SupplierMeta {
 
 export const suppliers: SupplierMeta[] = [
   { id: "musgrave", name: "Musgrave Marketplace", short: "Musgrave", isMain: true, thresholdPct: 0.10, channel: "Quick-order paste", minOrderValue: 0, deliveryFee: 0, color: "#0F766E" },
-  // { id: "barrygroup", name: "Barry Group", short: "Barry", isMain: false, thresholdPct: 0.13, channel: "Webview cart", minOrderValue: 0, deliveryFee: 0, color: "#4F46E5" },
+  // ONE entry for the retailer view. The backend keeps Barry as two suppliers
+  // (ambient / chill) because they are separate baskets with separate delivery
+  // dates, and the admin app shows that split — but a buyer comparing prices
+  // sees a single "Barry Group". See displaySupplierId in lib/api/cart.ts.
+  { id: "barrygroup", name: "Barry Group", short: "Barry", isMain: false, thresholdPct: 0.13, channel: "Webview cart", minOrderValue: 0, deliveryFee: 0, color: "#4F46E5" },
   { id: "oreilly", name: "O'Reillys Wholesale", short: "O'Reillys", isMain: false, thresholdPct: 0.13, channel: "Webview cart", minOrderValue: 150, deliveryFee: 6, color: "#0891B2" },
-  // { id: "kadona", name: "Kadona Wholesale", short: "Kadona", isMain: false, thresholdPct: 0.13, channel: "Webview cart", minOrderValue: 100, deliveryFee: 5, color: "#7C3AED" },
+  // Live: searched, priced and cart-wired like the other three. The minimum is
+  // the one genuinely published figure in this list — Kadona state EUR 1,000 on
+  // the cart page and refuse checkout below it, measured on the GROSS total.
+  { id: "kadona", name: "Kadona Wholesale", short: "Kadona", isMain: false, thresholdPct: 0.13, channel: "Webview cart", minOrderValue: 1000, deliveryFee: 0, color: "#7C3AED" },
   // { id: "savage", name: "Savage & Whitten", short: "Savage", isMain: false, thresholdPct: 0.13, channel: "Pick list only", minOrderValue: 0, deliveryFee: 0, color: "#B45309" },
   // { id: "valuecentre", name: "Value Centre Cavan", short: "Value Centre", isMain: false, thresholdPct: 0.13, channel: "Webview cart", minOrderValue: 50, deliveryFee: 7.5, color: "#BE123C" },
 ];

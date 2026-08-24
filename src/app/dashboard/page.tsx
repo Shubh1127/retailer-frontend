@@ -36,6 +36,7 @@ import Link from "next/link";
 import AppShell from "@/components/AppShell";
 import { CartBar, CartCell, useCart } from "@/components/Cart";
 import { SupplierPriceCell, supplierColumns } from "@/components/SupplierPrices";
+import { sameDisplaySupplier, supplierLabel } from "@/lib/api/cart";
 // The dashboard already shows live progress counts of its own, so only the
 // skeleton is needed here.
 import { TableSkeleton } from "@/components/TableSkeleton";
@@ -61,13 +62,6 @@ import {
  * like a spreadsheet would. Both paths therefore check against this same list
  * rather than trusting the attribute.
  */
-const ACCEPTED_EXTENSIONS = [".xls", ".xlsx", ".csv"] as const;
-const ACCEPT_ATTRIBUTE = ACCEPTED_EXTENSIONS.join(",");
-
-function hasAcceptedExtension(file: File): boolean {
-  const name = file.name.toLowerCase();
-  return ACCEPTED_EXTENSIONS.some((extension) => name.endsWith(extension));
-}
 
 /**
  * True only for a drag carrying files.
@@ -254,7 +248,7 @@ function AlternativeCard({
             {alternative.product}
           </div>
           <div className="mt-0.5 text-[12px] text-ink-soft">
-            {packOf(alternative)} · {alternative.supplierName}
+            {packOf(alternative)} · {supplierLabel(alternative.supplier)}
             {alternative.sku ? ` · SKU ${alternative.sku}` : ""}
           </div>
         </div>
@@ -421,7 +415,7 @@ function ProductDetailModal({
 
                 return (
                   <p className="mt-1.5 text-[11.5px] font-medium text-sky-900">
-                    {cheaper.supplierName} lists it at {eur(cheaper.exVatCasePrice)} —{" "}
+                    {supplierLabel(cheaper.supplier)} lists it at {eur(cheaper.exVatCasePrice)} —{" "}
                     {eur(row.price - (cheaper.exVatCasePrice ?? 0))} less per case.
                     Re-confirm the line to switch.
                   </p>
@@ -431,8 +425,11 @@ function ProductDetailModal({
           )}
 
           {/* The barcode agreement behind the match.
-              Deliberately worded as identity and nothing more: both suppliers
-              published this GS1 number, so it is the same retail product. It
+              Deliberately worded as identity and nothing more: two or more
+              independent suppliers published this GS1 number, so it is the same
+              retail product. The count is read off the data rather than fixed
+              at "both" — there are three suppliers now, and a line can be
+              confirmed by any two of them. It
               does NOT say the packs are the same — one barcode can cover a
               display unit at one supplier and a single box at another — so the
               pack caveats stay where they are, in `warnings`. */}
@@ -443,7 +440,10 @@ function ProductDetailModal({
                   ✓
                 </span>
                 <span className="text-[12.5px] font-medium text-emerald-800">
-                  Barcode confirmed at both suppliers
+                  Barcode confirmed at{" "}
+                  {row.eanConfirmed.suppliers.length === 2
+                    ? "both suppliers"
+                    : `${row.eanConfirmed.suppliers.length} suppliers`}
                 </span>
               </div>
 
@@ -466,7 +466,7 @@ function ProductDetailModal({
                 {row.eanConfirmed.suppliers.map((entry) => (
                   <div key={entry.supplier} className="flex items-baseline gap-2">
                     <dt className="w-24 shrink-0 text-[11px] uppercase tracking-wide text-emerald-900/60">
-                      {entry.supplierName}
+                      {supplierLabel(entry.supplier)}
                     </dt>
                     <dd className="text-[12.5px] text-ink">
                       {entry.sku ? (
@@ -507,7 +507,7 @@ function ProductDetailModal({
                           {offer.product}
                         </div>
                         <div className="text-[11.5px] text-ink-soft">
-                          {packOf(offer)} · {offer.supplierName}
+                          {packOf(offer)} · {supplierLabel(offer.supplier)}
                         </div>
                       </div>
                       <div className="shrink-0 text-[13px] font-medium text-ink">
@@ -558,24 +558,8 @@ function ProductDetailModal({
 
 export default function DashboardPage() {
   const [job, setJob] = useState<JobSummary | null>(null);
-  const [uploadError, setUploadError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-  const [isDraggingFile, setIsDraggingFile] = useState(false);
 
-  // The header's picker, reused so the empty-state panel opens the same one
-  // rather than mounting a second input that could drift out of step with it.
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
-  /**
-   * Drag depth, not a boolean.
-   *
-   * `dragleave` fires on the panel every time the pointer crosses into one of
-   * its children, so a boolean switches the highlight off while the file is
-   * still very much over the dropzone — it reads as flicker. Counting enter and
-   * leave means the highlight clears only when the pointer has genuinely left.
-   */
-  const dragDepthRef = useRef(0);
 
   // Keyed by Excel row: one row per retailer product, replay-safe.
   const [ready, setReady] = useState<Map<number, ReadyToOrderRow>>(new Map());
@@ -611,140 +595,6 @@ export default function DashboardPage() {
 
   useEffect(() => () => unsubscribeRef.current?.(), []);
 
-  const handleUpload = useCallback(async (file: File) => {
-    setIsUploading(true);
-    setUploadError(null);
-    setNotice(null);
-    setReady(new Map());
-    setAttention(new Map());
-    setDecisions(new Map());
-    unsubscribeRef.current?.();
-
-    try {
-      const created = await createJob(file);
-      setJob(created);
-
-      if (created.warning) setNotice(created.warning);
-      else if (created.aiService && !created.aiService.reachable) {
-        setNotice(
-          "The AI matching service is not reachable — matching will fall back to the deterministic rules only.",
-        );
-      } else if (created.persistence === "memory-only") {
-        setNotice(
-          "Supabase is not configured — this run will not appear in job history.",
-        );
-      }
-
-      unsubscribeRef.current = subscribeToJob(created.jobId, {
-        onStatus: (summary) => setJob(summary),
-        // An admin settled one of these lines while we were watching.
-        onOverride: (decision) => {
-          setDecisions((current) => {
-            const next = new Map(current);
-            // "Restored" means the admin withdrew their decision, so the line
-            // goes back to whatever the pipeline said — which is exactly what
-            // dropping the entry does.
-            if (decision.type === "row-restored") next.delete(decision.row);
-            else next.set(decision.row, decision);
-            return next;
-          });
-        },
-        onBatch: (event) => {
-          // Append, never replace. Keyed by Excel row so a replayed batch after
-          // a reconnect updates in place instead of duplicating a product.
-          if (event.readyToOrder.length > 0) {
-            setReady((current) => {
-              const next = new Map(current);
-              for (const row of event.readyToOrder) next.set(row.row, row);
-              return next;
-            });
-          }
-          if (event.needsAttention.length > 0) {
-            setAttention((current) => {
-              const next = new Map(current);
-              for (const row of event.needsAttention) next.set(row.row, row);
-              return next;
-            });
-          }
-          setJob((current) =>
-            current
-              ? {
-                  ...current,
-                  processedProducts: event.processedProducts,
-                  totalProducts: event.totalProducts,
-                  progress: event.progress,
-                  status: event.status,
-                }
-              : current,
-          );
-        },
-        onDone: (summary) => setJob(summary),
-        onError: (message) => setNotice(message),
-      });
-    } catch (error) {
-      setUploadError(error instanceof Error ? error.message : "Upload failed");
-    } finally {
-      setIsUploading(false);
-    }
-  }, []);
-
-  const openFilePicker = useCallback(() => {
-    if (isUploading) return;
-    fileInputRef.current?.click();
-  }, [isUploading]);
-
-  const handleDragEnter = useCallback((event: DragEvent) => {
-    if (!isFileDrag(event)) return;
-    event.preventDefault();
-    dragDepthRef.current += 1;
-    setIsDraggingFile(true);
-  }, []);
-
-  const handleDragOver = useCallback((event: DragEvent) => {
-    if (!isFileDrag(event)) return;
-    // Without this the browser handles the drop itself and navigates away to
-    // the file, discarding the page and any job in progress with it.
-    event.preventDefault();
-    event.dataTransfer.dropEffect = "copy";
-  }, []);
-
-  const handleDragLeave = useCallback(() => {
-    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
-    if (dragDepthRef.current === 0) setIsDraggingFile(false);
-  }, []);
-
-  const handleDrop = useCallback(
-    (event: DragEvent) => {
-      event.preventDefault();
-      // A completed drop ends the drag outright — no matching `dragleave`
-      // arrives, so the depth is reset rather than decremented.
-      dragDepthRef.current = 0;
-      setIsDraggingFile(false);
-
-      if (isUploading) return;
-
-      const files = Array.from(event.dataTransfer.files);
-      if (files.length === 0) return;
-
-      // One job is one file. Silently taking the first of several would start a
-      // run against a file the user did not choose.
-      if (files.length > 1) {
-        setUploadError("Drop one order file at a time.");
-        return;
-      }
-
-      const file = files[0]!;
-      if (!hasAcceptedExtension(file)) {
-        setUploadError(
-          `“${file.name}” is not an order file. Drop an Excel (.xls, .xlsx) or CSV file.`,
-        );
-        return;
-      }
-
-      void handleUpload(file);
-    },
-    [handleUpload, isUploading],
-  );
 
   const readyRows = useMemo(() => [...ready.values()], [ready]);
   const attentionRows = useMemo(() => [...attention.values()], [attention]);
@@ -763,12 +613,16 @@ export default function DashboardPage() {
     const value = (row: ReadyToOrderRow): string | number => {
       if (sortKey.startsWith("price:")) {
         const supplierId = sortKey.slice("price:".length);
-        const offer = row.detail.offers.find(
-          (entry) => entry.supplier === supplierId,
-        );
+        // Display id, matching the column header: "barrygroup" has to find an
+        // offer that is really barrygroup-ambient or -chill, or sorting by the
+        // Barry column would rank every row as "no quote".
+        const prices = row.detail.offers
+          .filter((entry) => sameDisplaySupplier(entry.supplier, supplierId))
+          .map((entry) => entry.exVatCasePrice)
+          .filter((price): price is number => typeof price === "number");
         // No quote from this supplier sorts to the end, whichever way the
         // column is pointing — "they had nothing" is not "they were cheapest".
-        return offer?.exVatCasePrice ?? Number.POSITIVE_INFINITY;
+        return prices.length > 0 ? Math.min(...prices) : Number.POSITIVE_INFINITY;
       }
 
       switch (sortKey) {
@@ -830,7 +684,7 @@ export default function DashboardPage() {
             Order dashboard
           </h1>
           <p className="mt-0.5 text-[13px] text-ink-soft">
-            Upload an order file — results appear as each batch finishes.
+            Build a list, review it, then send it for comparison.
           </p>
         </div>
 
@@ -841,33 +695,21 @@ export default function DashboardPage() {
           >
             Job history
           </Link>
-          <label
-            className={`inline-flex cursor-pointer items-center gap-2 rounded-md bg-teal-600 px-3.5 py-2 text-[13px] font-medium text-white hover:bg-teal-700 ${
-              isUploading ? "pointer-events-none opacity-60" : ""
-            }`}
+          {/* An order now STARTS as a list, not as a job.
+              Uploading used to fan two hundred lines straight out to four live
+              trade accounts before anyone had looked at what was in the file.
+              The Order List puts a reviewable step in front of that — and it is
+              one way in rather than two, so the two cannot drift apart. */}
+          <Link
+            href="/orders"
+            className="inline-flex items-center gap-2 rounded-md bg-teal-600 px-3.5 py-2 text-[13px] font-medium text-white hover:bg-teal-700"
           >
             <UploadIcon />
-            {isUploading ? "Uploading…" : "Upload order file"}
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept={ACCEPT_ATTRIBUTE}
-              className="hidden"
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) void handleUpload(file);
-                event.target.value = "";
-              }}
-            />
-          </label>
+            Build an order list
+          </Link>
         </div>
       </div>
 
-      {uploadError && (
-        <div className="mb-4 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700">
-          {uploadError}
-        </div>
-      )}
       {notice && (
         <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
           {notice}
@@ -875,52 +717,29 @@ export default function DashboardPage() {
       )}
 
       {!job ? (
-        // The dashed border already reads as a dropzone, so it behaves like one:
-        // dropping a file here works, and so does clicking anywhere on it.
-        <div
-          role="button"
-          tabIndex={isUploading ? -1 : 0}
-          aria-label="Upload an order file"
-          aria-disabled={isUploading}
-          onClick={openFilePicker}
-          onKeyDown={(event) => {
-            // A div with role="button" gets no keyboard activation for free.
-            if (event.key === "Enter" || event.key === " ") {
-              event.preventDefault();
-              openFilePicker();
-            }
-          }}
-          onDragEnter={handleDragEnter}
-          onDragOver={handleDragOver}
-          onDragLeave={handleDragLeave}
-          onDrop={handleDrop}
-          className={`rounded-xl border border-dashed px-6 py-16 text-center outline-none transition-colors focus-visible:ring-2 focus-visible:ring-teal-500 ${
-            isDraggingFile
-              ? "border-teal-500 bg-teal-500/5"
-              : "border-line bg-surface"
-          } ${
-            isUploading
-              ? "cursor-default opacity-60"
-              : "cursor-pointer hover:border-ink-faint"
-          }`}
-        >
-          <div
-            className={`mx-auto flex h-11 w-11 items-center justify-center rounded-full transition-colors ${
-              isDraggingFile ? "bg-teal-500/10 text-teal-600" : "bg-canvas text-ink-soft"
-            }`}
-          >
+        // NO LONGER A DROPZONE.
+        //
+        // Dropping a file here used to start a job immediately — a second way
+        // in, beside the button, both of which fanned two hundred lines out to
+        // four live trade accounts before anyone had reviewed the file. There is
+        // one way to start an order now, and it goes through the Order List.
+        <div className="rounded-xl border border-dashed border-line bg-surface px-6 py-16 text-center">
+          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-canvas text-ink-soft">
             <UploadIcon />
           </div>
           <h2 className="mt-3 text-[15px] font-semibold text-ink">
-            {isDraggingFile
-              ? "Drop the file to start"
-              : "Drop an order file here, or click to browse"}
+            Start with an order list
           </h2>
           <p className="mx-auto mt-1 max-w-md text-[13px] text-ink-soft">
-            Excel (.xls, .xlsx) or CSV in the EPOS Article Order Listing layout.
-            Products are searched in batches of 50, and the first results appear
-            within seconds — you do not have to wait for the whole file.
+            Import your CSV into a list, check the quantities, then send it for
+            comparison. Nothing is shown to a supplier until you do.
           </p>
+          <Link
+            href="/orders"
+            className="mt-4 inline-flex items-center gap-2 rounded-md bg-teal-600 px-3.5 py-2 text-[13px] font-medium text-white hover:bg-teal-700"
+          >
+            Build an order list
+          </Link>
         </div>
       ) : (
         <>
@@ -1160,7 +979,7 @@ export default function DashboardPage() {
                                 row.eanConfirmed.suppliers
                                   .map(
                                     (entry) =>
-                                      `${entry.supplierName}: ${entry.sku ?? "no code"}` +
+                                      `${supplierLabel(entry.supplier)}: ${entry.sku ?? "no code"}` +
                                       (entry.ean ? ` (EAN ${entry.ean})` : ""),
                                   )
                                   .join("\n") +

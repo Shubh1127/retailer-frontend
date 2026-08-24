@@ -1,89 +1,218 @@
+"use client";
+
+/**
+ * Suppliers — the shop's trade accounts, what each can do, and how it buys.
+ *
+ * WHY NO PASSWORDS ARE SHOWN
+ *
+ * The card names the account the app logs in as, and says whether a password is
+ * configured. It never shows the password, because the backend never sends one:
+ * a supplier password buys stock on the shop's credit, and putting it in an API
+ * response puts it in the network tab and in every proxy between here and the
+ * server, to display a field nobody can act on from this screen.
+ *
+ * Everything an operator actually needs is here instead — which account, by
+ * what method, and the exact setting names to change if it is wrong.
+ */
+
+import { useCallback, useEffect, useState } from "react";
+
 import AppShell from "@/components/AppShell";
-import { suppliers, eur } from "@/lib/mock-data";
+import { eur } from "@/lib/api/jobs";
+import {
+  connectionStatus,
+  getSupplierConnections,
+  type SupplierConnection,
+} from "@/lib/api/suppliers";
 
-export default function SuppliersPage() {
+const TONE: Record<"ok" | "warn" | "idle", string> = {
+  ok: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  warn: "border-amber-200 bg-amber-50 text-amber-700",
+  idle: "border-line bg-canvas text-ink-faint",
+};
+
+function Capability({ on, label }: { on: boolean; label: string }) {
   return (
-    // <AppShell active="Suppliers">
-    //   <div className="flex flex-wrap items-end justify-between gap-4">
-    //     <div>
-    //       <h1 className="text-[22px] font-semibold tracking-tight text-ink">Suppliers</h1>
-    //       <p className="mt-1 text-[13.5px] text-ink-soft">Your trade accounts, ordering channels and compare thresholds</p>
-    //     </div>
-    //     <button className="rounded-md bg-teal-500 px-3.5 py-2 text-[13px] font-medium text-white hover:bg-teal-600">
-    //       Add supplier
-    //     </button>
-    //   </div>
-
-    //   <div className="mt-6 grid gap-4 lg:grid-cols-2">
-    //     {suppliers.map((s) => (
-    //       <div key={s.id} className="rounded-xl border border-line bg-surface p-5 shadow-card">
-    //         <div className="flex items-start justify-between gap-3">
-    //           <div className="flex items-center gap-3">
-    //             <span className="flex h-10 w-10 items-center justify-center rounded-lg text-[13.5px] font-semibold text-white" style={{ backgroundColor: s.color }}>
-    //               {s.short.slice(0, 2)}
-    //             </span>
-    //             <div>
-    //               <p className="text-[14.5px] font-semibold text-ink">{s.name}</p>
-    //               <p className="text-[12px] text-ink-soft">{s.channel}</p>
-    //             </div>
-    //           </div>
-    //           {s.isMain && (
-    //             <span className="rounded-md border border-teal-500/20 bg-teal-50 px-2 py-0.5 text-[11.5px] font-medium text-link">
-    //               Main supplier
-    //             </span>
-    //           )}
-    //         </div>
-
-    //         <div className="mt-5 grid grid-cols-3 gap-3 border-t border-line pt-4 text-center">
-    //           <div>
-    //             <p className="nums text-[15px] font-semibold text-ink">{Math.round(s.thresholdPct * 100)}%</p>
-    //             <p className="text-[11px] text-ink-soft">Compare threshold</p>
-    //           </div>
-    //           <div>
-    //             <p className="nums text-[15px] font-semibold text-ink">{s.minOrderValue ? eur(s.minOrderValue) : "None"}</p>
-    //             <p className="text-[11px] text-ink-soft">Min. order</p>
-    //           </div>
-    //           <div>
-    //             <p className="nums text-[15px] font-semibold text-ink">{s.deliveryFee ? eur(s.deliveryFee) : "Free"}</p>
-    //             <p className="text-[11px] text-ink-soft">Delivery fee</p>
-    //           </div>
-    //         </div>
-
-    //         <div className="mt-4 flex items-center justify-between border-t border-line pt-4">
-    //           <p className="text-[12px] text-ink-soft">
-    //             {s.isMain
-    //               ? "Keeps every line unless another supplier beats it by more than its threshold."
-    //               : `Only wins a line by beating the main supplier's price by more than ${Math.round(s.thresholdPct * 100)}%.`}
-    //           </p>
-    //           <button className="shrink-0 text-[12.5px] font-medium text-teal-600 hover:text-link">Edit</button>
-    //         </div>
-    //       </div>
-    //     ))}
-    //   </div>
-
-    //   <div className="mt-8 rounded-xl border border-line bg-surface p-5 shadow-card">
-    //     <h2 className="text-[14.5px] font-semibold text-ink">Global allocation rules</h2>
-    //     <div className="mt-4 grid gap-4 sm:grid-cols-3">
-    //       <RuleField label="Default preference band" value="5%" hint="Applies when a supplier has no threshold of its own" />
-    //       <RuleField label="Outlier deviation tolerance" value="45%" hint="Flags a per-unit price this far from the median" />
-    //       <RuleField label="Cart price tolerance" value="2%" hint="Drift beyond this turns a reconciled line amber" />
-    //     </div>
-    //   </div>
-    // </AppShell>
-     <AppShell active="suppliers">
-          <div className="flex flex-col items-center justify-center gap-3 py-20">
-            <span className="text-[12.5px] text-ink-faint text-center">Coming soon</span>
-          </div>
-        </AppShell>
+    <span
+      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] ${
+        on ? "bg-teal-50 text-link" : "bg-canvas text-ink-faint line-through"
+      }`}
+    >
+      {on ? "✓" : "—"} {label}
+    </span>
   );
 }
 
-function RuleField({ label, value, hint }: { label: string; value: string; hint: string }) {
+function Fact({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-lg border border-line p-4">
-      <p className="text-[12px] text-ink-soft">{label}</p>
-      <p className="nums mt-1 text-[18px] font-semibold text-ink">{value}</p>
-      <p className="mt-1 text-[11.5px] text-ink-faint">{hint}</p>
+    <div>
+      <p className="nums text-[15px] font-semibold text-ink">{value}</p>
+      <p className="text-[11px] text-ink-soft">{label}</p>
     </div>
+  );
+}
+
+export default function SuppliersPage() {
+  const [suppliers, setSuppliers] = useState<SupplierConnection[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      setSuppliers(await getSupplierConnections());
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load suppliers");
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  return (
+    <AppShell active="Suppliers">
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-[22px] font-semibold tracking-tight text-ink">Suppliers</h1>
+          <p className="mt-1 text-[13.5px] text-ink-soft">
+            Your trade accounts, what each connection can do, and the buying rules
+            comparison uses.
+          </p>
+        </div>
+      </div>
+
+      {error && (
+        <div className="mt-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700">
+          {error}
+        </div>
+      )}
+
+      {suppliers === null && !error && (
+        <p className="mt-6 text-[13px] text-ink-soft">Loading…</p>
+      )}
+
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+        {(suppliers ?? []).map((supplier) => {
+          const status = connectionStatus(supplier);
+          const account = supplier.account;
+
+          return (
+            <div
+              key={supplier.supplierId}
+              className="rounded-xl border border-line bg-surface p-5 shadow-card"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[14.5px] font-semibold text-ink">{supplier.name}</p>
+                  <p className="text-[12px] text-ink-soft">{supplier.channel}</p>
+                </div>
+                <div className="flex shrink-0 flex-col items-end gap-1">
+                  <span
+                    className={`rounded-md border px-2 py-0.5 text-[11.5px] font-medium ${TONE[status.tone]}`}
+                  >
+                    {status.label}
+                  </span>
+                  {supplier.isMain && (
+                    <span className="rounded-md border border-teal-500/20 bg-teal-50 px-2 py-0.5 text-[11.5px] font-medium text-link">
+                      Main supplier
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* ---- Account ------------------------------------------- */}
+              <div className="mt-4 rounded-lg border border-line bg-canvas px-3.5 py-3">
+                <div className="flex flex-wrap items-baseline justify-between gap-2">
+                  <span className="text-[11px] uppercase tracking-wide text-ink-faint">
+                    Trade account
+                  </span>
+                  {account.configured && (
+                    <span className="text-[11.5px] text-ink-faint">
+                      {account.method === "credentials"
+                        ? "Username and password"
+                        : "Pasted browser session"}
+                    </span>
+                  )}
+                </div>
+
+                {account.username ? (
+                  <p className="mt-1 break-all font-mono text-[13px] text-ink">
+                    {account.username}
+                  </p>
+                ) : (
+                  <p className="mt-1 text-[13px] text-ink-soft">
+                    {account.configured
+                      ? "Signed in with a pasted session — no username stored."
+                      : "No account configured."}
+                  </p>
+                )}
+
+                <p className="mt-1.5 text-[11.5px] text-ink-soft">
+                  {/* The password is never sent to this page. Saying so beats a
+                      row of dots, which implies a value is here that is not. */}
+                  Password{" "}
+                  {account.passwordSet ? (
+                    <span className="text-emerald-700">set</span>
+                  ) : (
+                    <span className="text-amber-700">not set</span>
+                  )}{" "}
+                  — held on the server and never shown here.
+                </p>
+
+                {account.method === "session-cookie" && (
+                  <p className="mt-1.5 text-[11.5px] text-amber-700">
+                    A pasted session expires and cannot renew itself, so a long
+                    sync can stop partway. Adding a username and password makes it
+                    self-healing.
+                  </p>
+                )}
+
+                {!account.configured && account.configuredBy.length > 0 && (
+                  <p className="mt-1.5 text-[11.5px] text-ink-faint">
+                    Set{" "}
+                    <span className="font-mono">{account.configuredBy.join(", ")}</span>{" "}
+                    on the server to connect.
+                  </p>
+                )}
+              </div>
+
+              {supplier.vendorNote && (
+                <p className="mt-2 text-[11.5px] text-ink-soft">{supplier.vendorNote}</p>
+              )}
+
+              {/* ---- What the connection can do ------------------------ */}
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                <Capability on={supplier.capabilities.search} label="Live search" />
+                <Capability on={supplier.capabilities.cart} label="Add to basket" />
+                <Capability on={supplier.capabilities.catalogue} label="Synced catalogue" />
+              </div>
+
+              {/* ---- Buying rules -------------------------------------- */}
+              <div className="mt-4 grid grid-cols-3 gap-3 border-t border-line pt-4 text-center">
+                <Fact
+                  label="Compare threshold"
+                  value={`${Math.round(supplier.thresholdPct * 100)}%`}
+                />
+                <Fact
+                  label="Minimum order"
+                  value={supplier.minOrderValue > 0 ? eur(supplier.minOrderValue) : "None"}
+                />
+                <Fact
+                  label="Delivery"
+                  value={supplier.deliveryFee > 0 ? eur(supplier.deliveryFee) : "Free"}
+                />
+              </div>
+
+              {supplier.freeDeliveryThreshold !== undefined &&
+                supplier.freeDeliveryThreshold > 0 && (
+                  <p className="mt-2 text-center text-[11.5px] text-ink-soft">
+                    Free delivery over {eur(supplier.freeDeliveryThreshold)}
+                  </p>
+                )}
+            </div>
+          );
+        })}
+      </div>
+    </AppShell>
   );
 }

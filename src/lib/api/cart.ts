@@ -17,7 +17,20 @@
 import { env } from "./env";
 import { accessToken } from "../supabase";
 
-export type CartSupplier = "musgrave" | "oreilly";
+/**
+ * A supplier basket the app can drive.
+ *
+ * Barry appears as its TWO baskets, never as the collapsed "barrygroup" the
+ * comparison table shows. There is no combined Barry basket at the supplier —
+ * ambient and chill hold different lines and arrive on different days — so a
+ * cart call naming "barrygroup" would have nowhere to go.
+ */
+export type CartSupplier =
+  | "musgrave"
+  | "oreilly"
+  | "barrygroup-ambient"
+  | "barrygroup-chill"
+  | "kadona";
 
 export interface BasketLineItem {
   basketItemId: string;
@@ -147,21 +160,82 @@ export async function getBasket(
   return readOrThrow<SupplierBasket>(res, "Could not read the supplier basket");
 }
 
+/** Why one product was refused. Mirrors the backend's codes exactly. */
+export type CartBlockCode =
+  | "verification-required"
+  | "verification-stale"
+  | "verification-invalidated"
+  | "verification-failed"
+  | "verification-other-product";
+
+export interface NeedsVerificationEntry {
+  sku: string;
+  /** The job line, when a standing verification could name one. */
+  row?: number;
+  code: CartBlockCode;
+  reason: string;
+  changes?: { field: string; previous?: string | number; next?: string | number }[];
+}
+
+/**
+ * The basket refused these products until they are re-checked.
+ *
+ * A DISTINCT ERROR TYPE, not a message. The caller does not want to print this
+ * — it wants to offer the retailer a "Check them now" button for exactly these
+ * rows, and it cannot do that from a sentence. Everything else the cart can
+ * fail with stays an ordinary Error.
+ */
+export class VerificationRequiredError extends Error {
+  readonly needsVerification: NeedsVerificationEntry[];
+
+  constructor(message: string, needsVerification: NeedsVerificationEntry[]) {
+    super(message);
+    this.name = "VerificationRequiredError";
+    this.needsVerification = needsVerification;
+  }
+}
+
 /**
  * Add every item in one call to OUR backend.
  *
  * The backend then issues one request per product to Musgrave, because their
  * add endpoint rejects a batched body. That is deliberately hidden here: the
  * page should not have to know how many HTTP calls a supplier needs.
+ *
+ * `jobId` IS NOT OPTIONAL DECORATION. The backend's three-hour price lock only
+ * applies to an add that says which job it came from — a bare {sku, quantity}
+ * has no prices behind it to be stale, and the manual-add path legitimately
+ * sends none. This call previously omitted it, which meant every add from the
+ * results table looked like a manual one and the lock never fired on the exact
+ * path it exists to protect.
  */
 export async function addItems(
   items: AddItemRequest[],
   supplier: CartSupplier = "musgrave",
+  jobId?: string,
 ): Promise<AddProductsResult> {
   const res = await request(`/api/cart/${supplier}/items`, {
     method: "POST",
-    body: { items },
+    body: { items, ...(jobId ? { jobId } : {}) },
   });
+
+  // Read before `readOrThrow`, which collapses every failure into a sentence.
+  // This one carries a list the caller has to act on.
+  if (res.status === 409) {
+    const body = (await res.clone().json().catch(() => null)) as {
+      error?: string;
+      lock?: string;
+      needsVerification?: NeedsVerificationEntry[];
+    } | null;
+
+    if (body?.lock === "verification-required") {
+      throw new VerificationRequiredError(
+        body.error ?? "These products need checking before they can be added.",
+        body.needsVerification ?? [],
+      );
+    }
+  }
+
   return readOrThrow<AddProductsResult>(res, "Could not add products to the basket");
 }
 
@@ -197,6 +271,87 @@ export async function validateBasket(
 }
 
 // ---------------------------------------------------------------------------
+// Removing one job's lines
+// ---------------------------------------------------------------------------
+
+/** One line the removal acted on, or failed to. */
+export interface RemovalLine {
+  sku: string;
+  name?: string;
+  basketItemId?: string;
+  outcome: "removed" | "failed" | "already-absent";
+  error?: string;
+}
+
+/** A basket line this job never owned, and which was therefore left alone. */
+export interface KeptLine {
+  sku: string;
+  name?: string;
+  quantity: number;
+}
+
+export interface RemovalReport {
+  removed: RemovalLine[];
+  failed: RemovalLine[];
+  kept: KeptLine[];
+  notInBasket: string[];
+  reconciliation?: {
+    stillPresent: string[];
+    keptLost: string[];
+    linesBefore: number;
+    linesAfter: number;
+    agrees: boolean;
+  };
+}
+
+export interface RemovalRun {
+  id: string;
+  jobId: string;
+  supplier: string;
+  status: "running" | "success" | "partial" | "failed";
+  startedAt: string;
+  finishedAt?: string;
+  progress: { completed: number; total: number };
+  report: RemovalReport;
+  error?: string;
+}
+
+/**
+ * Ask the supplier to give back the lines THIS job put in the basket.
+ *
+ * Scoped by jobId, always. There is no whole-basket clear and there must never
+ * be one: a basket holds stock added at the supplier's own site and leftovers
+ * from earlier uploads, and there is no undo at the far end.
+ *
+ * The supplier id must be the EXACT one — `barrygroup-ambient`, never the
+ * collapsed `barrygroup` the price table displays. Ambient and chill are two
+ * separate baskets arriving on different days; "barrygroup" is not a basket at
+ * all and the route would reject it.
+ *
+ * Returns as soon as the run has STARTED. Removal is one request per line and
+ * Kadona re-reads its whole cart around each one, so this is minutes of work —
+ * the caller polls `removalStatus`.
+ */
+export async function removeJobLines(
+  supplier: CartSupplier,
+  jobId: string,
+): Promise<{ removalId: string; supplier: string; jobId: string; poll: string }> {
+  const res = await request(`/api/cart/${supplier}/remove-job-lines`, {
+    method: "POST",
+    body: { jobId },
+  });
+  return readOrThrow(res, "Could not start removing these lines");
+}
+
+export async function removalStatus(
+  supplier: CartSupplier,
+  removalId: string,
+): Promise<RemovalRun> {
+  const res = await request(`/api/cart/${supplier}/removals/${removalId}`);
+  return readOrThrow<RemovalRun>(res, "Could not read the removal status");
+}
+
+// ---------------------------------------------------------------------------
 // Helpers shared by the Ready To Order views
 // ---------------------------------------------------------------------------
 
@@ -204,6 +359,11 @@ export async function validateBasket(
 export const CART_SUPPLIERS: ReadonlySet<string> = new Set([
   "musgrave",
   "oreilly",
+  // Two entries, matching the two baskets the backend routes expose at
+  // /api/cart/barrygroup-ambient and /api/cart/barrygroup-chill.
+  "barrygroup-ambient",
+  "barrygroup-chill",
+  "kadona",
 ]);
 
 export function supportsCart(supplierId: string): boolean {
@@ -218,7 +378,49 @@ export function supportsCart(supplierId: string): boolean {
 export const SUPPLIER_LABELS: Record<string, string> = {
   musgrave: "Musgrave",
   oreilly: "O'Reilly",
+  // Barry is ONE supplier to a retailer. The backend keeps ambient and chill as
+  // separate suppliers because they are separate baskets with their own
+  // delivery dates and minimums, and allocation genuinely needs that — but a
+  // buyer comparing prices does not, and two mostly-empty "Barry" columns is
+  // worse than one. The split stays visible in the admin app.
+  barrygroup: "Barry Group",
+  "barrygroup-ambient": "Barry Group",
+  "barrygroup-chill": "Barry Group",
+  kadona: "Kadona",
 };
+
+/**
+ * The supplier id a RETAILER sees, which is not always the one the system
+ * orders from.
+ *
+ * Barry's ambient and chill baskets collapse to a single "barrygroup" for
+ * display. This is presentation ONLY — it must never be used to place an order,
+ * add to a basket, or decide a threshold, because the two baskets have
+ * different commercial terms and `barrygroup` is not a real basket at all.
+ * Anything touching the supplier's site keeps the precise id.
+ */
+export function displaySupplierId(supplierId: string): string {
+  return supplierId.startsWith("barrygroup") ? "barrygroup" : supplierId;
+}
+
+/** True when two supplier ids are the same supplier as far as a buyer cares. */
+export function sameDisplaySupplier(a: string, b: string): boolean {
+  return displaySupplierId(a) === displaySupplierId(b);
+}
+
+/**
+ * The name to show on a BASKET, where the collapse must not apply.
+ *
+ * Comparing prices, a buyer wants one "Barry Group". Looking at baskets they
+ * need the opposite: these are two orders, delivered on different days, each
+ * with its own minimum. Two panels both labelled "Barry Group" would look like
+ * a bug and hide the fact that the order has been split in two.
+ */
+export function cartSupplierLabel(id: string): string {
+  if (id === "barrygroup-ambient") return "Barry Group · Ambient";
+  if (id === "barrygroup-chill") return "Barry Group · Chill";
+  return supplierLabel(id);
+}
 
 export function supplierLabel(id: string): string {
   return SUPPLIER_LABELS[id.toLowerCase()] ?? id;

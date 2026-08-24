@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useSession } from "@/lib/useSession";
+import { reportSession } from "@/lib/api/session";
 import { supabase } from "@/lib/supabase";
 import ThemeToggle from "@/components/ThemeToggle";
 
@@ -43,7 +44,7 @@ export default function MarketingNav() {
               </span>
               <button
                 type="button"
-                onClick={() => void supabase().auth.signOut()}
+                onClick={() => void reportSession("signed-out").then(() => supabase().auth.signOut())}
                 className="hidden text-[13.5px] font-medium text-ink-soft hover:text-ink sm:inline"
               >
                 Sign out

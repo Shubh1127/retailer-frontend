@@ -21,6 +21,11 @@
  */
 
 import { eur, type ReadyToOrderRow } from "@/lib/api/jobs";
+import {
+  displaySupplierId,
+  sameDisplaySupplier,
+  supplierLabel,
+} from "@/lib/api/cart";
 
 export interface SupplierColumn {
   id: string;
@@ -33,15 +38,25 @@ export interface SupplierColumn {
  * Not hardcoded to Musgrave and O'Reilly: when a third supplier is added it
  * appears here with no change to this file. `bestSupplier` is included as well
  * as the offers, so the chosen supplier can never be missing a column.
+ *
+ * Columns are keyed by DISPLAY id, which collapses Barry's ambient and chill
+ * suppliers into one "Barry Group". Any given product sits in one department,
+ * so keeping them apart would produce two columns that are each blank wherever
+ * the other has a price — the same information, twice as wide, and it reads as
+ * though Barry failed to quote. The split is real and stays real everywhere
+ * that acts on it; this is the table only.
  */
 export function supplierColumns(rows: readonly ReadyToOrderRow[]): SupplierColumn[] {
   const byId = new Map<string, string>();
 
+  const remember = (supplierId: string, fallbackName: string) => {
+    const id = displaySupplierId(supplierId);
+    if (!byId.has(id)) byId.set(id, supplierLabel(id) || fallbackName);
+  };
+
   for (const row of rows) {
-    for (const offer of row.detail.offers) {
-      if (!byId.has(offer.supplier)) byId.set(offer.supplier, offer.supplierName);
-    }
-    if (!byId.has(row.bestSupplier)) byId.set(row.bestSupplier, row.bestSupplierName);
+    for (const offer of row.detail.offers) remember(offer.supplier, offer.supplierName);
+    remember(row.bestSupplier, row.bestSupplierName);
   }
 
   // Alphabetical by name — a stable order matters more than which order, since
@@ -51,10 +66,21 @@ export function supplierColumns(rows: readonly ReadyToOrderRow[]): SupplierColum
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-/** The ex-VAT case price this supplier quoted, or undefined if they had none. */
+/**
+ * The ex-VAT case price this supplier quoted, or undefined if they had none.
+ *
+ * Matches on the DISPLAY id so a "Barry Group" column finds a price whichever
+ * basket the offer came from. Where a product somehow appears in both, the
+ * cheaper wins the cell — the column is a claim about what Barry charges, and
+ * showing the dearer of two real prices would understate them.
+ */
 function priceOf(row: ReadyToOrderRow, supplierId: string): number | undefined {
-  const offer = row.detail.offers.find((entry) => entry.supplier === supplierId);
-  return offer?.exVatCasePrice;
+  const prices = row.detail.offers
+    .filter((entry) => sameDisplaySupplier(entry.supplier, supplierId))
+    .map((entry) => entry.exVatCasePrice)
+    .filter((price): price is number => typeof price === "number");
+
+  return prices.length > 0 ? Math.min(...prices) : undefined;
 }
 
 export function SupplierPriceCell({
@@ -65,7 +91,9 @@ export function SupplierPriceCell({
   supplierId: string;
 }) {
   const price = priceOf(row, supplierId);
-  const isChosen = row.bestSupplier === supplierId;
+  // Compared by display id: the row is ordered from barrygroup-chill, the
+  // column is "barrygroup", and the highlight has to land on it.
+  const isChosen = sameDisplaySupplier(row.bestSupplier, supplierId);
 
   if (price === undefined) {
     return (

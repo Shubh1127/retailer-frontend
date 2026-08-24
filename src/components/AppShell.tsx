@@ -10,6 +10,7 @@ import {
   type MeLocation,
   type MeResponse,
 } from "@/lib/api/me";
+import { reportSession } from "@/lib/api/session";
 import { supabase } from "@/lib/supabase";
 import ThemeToggle from "@/components/ThemeToggle";
 
@@ -17,12 +18,12 @@ const tabs = [
   { href: "/dashboard", label: "Dashboard", enabled: true },
   { href: "/jobs", label: "Jobs", enabled: true },
   { href: "/product-search", label: "Product search", enabled: true },
-  { href: "/orders", label: "Order list", enabled: false },
+  { href: "/orders", label: "Order list", enabled: true },
   { href: "/compare", label: "Compare", enabled: false },
-  { href: "/baskets", label: "Baskets", enabled: false },
+  { href: "/baskets", label: "Baskets", enabled: true },
   { href: "/reconcile", label: "Reconcile", enabled: false },
   { href: "/mappings", label: "Mappings", enabled: false },
-  { href: "/suppliers", label: "Suppliers", enabled: false },
+  { href: "/suppliers", label: "Suppliers", enabled: true },
 ];
 
 function PinIcon() {
@@ -341,6 +342,9 @@ function AccountMenu({ me }: { me: MeResponse["user"] }) {
               // Closed first: the sign-out and redirect are asynchronous, and a
               // menu left hanging open over a changing page looks like a freeze.
               close();
+              // Reported BEFORE the sign-out: afterwards there is no token left to
+              // authenticate the report with, and an unauthenticated one is dropped.
+              await reportSession("signed-out");
               await supabase().auth.signOut();
               router.replace("/login");
             }}

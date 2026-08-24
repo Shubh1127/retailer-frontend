@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="RetailCompare">
+  <!--
+    The tab icon is the mark already in the header: a teal rounded square with a
+    white R. Inventing a second symbol would leave the thing in the tab and the
+    thing on the page disagreeing about what this product looks like.
+
+    #0F766E is teal-500 from tailwind.config.ts — the one shade held identical
+    in both themes precisely so white sits on it legibly. A favicon cannot
+    respond to the page theme, so a colour that already works in both is the
+    only safe choice.
+
+    THE LETTER IS A PATH, NOT <text>. An SVG favicon is rendered in a restricted
+    context: the font stack a browser resolves there is not the page's, so a
+    text element can come out in a different face, at a different weight, or —
+    in some browsers — not at all. A path looks the same everywhere.
+
+    Drawn at 32 to be read at 16, so nothing is thinner than about two pixels at
+    that size: a solid field and one heavy letter, no outlines and no wordmark.
+  -->
+  <rect width="32" height="32" rx="7" fill="#0F766E"/>
+  <path
+    fill="#ffffff"
+    fill-rule="evenodd"
+    d="M9.5 7.5h9.2c3.2 0 5.4 2 5.4 4.9 0 2.2-1.2 3.9-3.2 4.6l3.9 7.5h-4.4l-3.4-6.8h-3.4v6.8H9.5V7.5Z
+       M13.6 11.1v3.4h4.7c1.2 0 1.9-.7 1.9-1.7s-.7-1.7-1.9-1.7h-4.7Z"
+  />
+</svg>

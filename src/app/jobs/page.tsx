@@ -42,9 +42,9 @@ export default function JobsPage() {
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (opts: { passive?: boolean } = {}) => {
     try {
-      setJobs(await listJobs());
+      setJobs(await listJobs(opts));
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load jobs");
@@ -64,7 +64,10 @@ export default function JobsPage() {
       (job) => job.status === "running" || job.status === "queued",
     );
     if (!hasRunning) return;
-    const timer = setInterval(() => void load(), 5000);
+    // Passive: this fires because a job is running, not because anybody is
+    // here. Counting it as presence would keep a tab signed in through a long
+    // job with the room empty.
+    const timer = setInterval(() => void load({ passive: true }), 5000);
     return () => clearInterval(timer);
   }, [jobs, load]);
 

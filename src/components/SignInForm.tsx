@@ -27,6 +27,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { reportSession } from "@/lib/api/session";
 import { supabase } from "@/lib/supabase";
 import {
   accountRequestStatus,
@@ -179,6 +180,10 @@ export default function SignInForm({
         password,
       });
 
+      // Reported after the credential is accepted, so a failed attempt is not
+      // recorded as a session.
+      if (!signInError) void reportSession("signed-in");
+
       forgetClaimToken();
 
       if (signInError) {
@@ -207,6 +212,10 @@ export default function SignInForm({
         email,
         password,
       });
+
+      // Reported after the credential is accepted, so a failed attempt is not
+      // recorded as a session.
+      if (!signInError) void reportSession("signed-in");
       if (signInError) {
         // Supabase is deliberately vague about WHICH half was wrong. Passing it
         // through keeps it that way, which is correct — a more helpful message

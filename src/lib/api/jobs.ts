@@ -93,7 +93,12 @@ export interface ReadyToOrderRow {
     differsFromRequest: boolean;
   };
   /**
-   * Set when both suppliers published the SAME barcode for this line.
+   * Set when two or more INDEPENDENT suppliers published the SAME barcode.
+   *
+   * Not always two: with three suppliers a line can be confirmed by any two of
+   * them, or by all three. Read the length of `suppliers` rather than assuming.
+   * Barry's ambient and chill baskets count as ONE supplier here — they are a
+   * single catalogue, and it agreeing with itself is not corroboration.
    *
    * An IDENTITY claim only: two independent catalogues published the same GS1
    * number, so it is the same retail product. It says nothing about the pack —
@@ -102,7 +107,7 @@ export interface ReadyToOrderRow {
    * what commercial equivalence decides.
    */
   eanConfirmed?: {
-    /** The canonical GTIN-14 both suppliers agreed on. */
+    /** The canonical GTIN-14 the suppliers agreed on. */
     gtin14: string;
     /** Each supplier's own code and its own spelling of the barcode. */
     suppliers: {
@@ -245,17 +250,41 @@ export function confirmedOverReadyRow(
     ...(override.uom ? { uom: override.uom } : {}),
   };
 
+  // The price the override recorded, or — failing that — the one the OTHER
+  // supplier's listing happens to have.
+  //
+  // `row.price` belongs to the supplier the matcher picked. Carrying it across
+  // was actively wrong: the panel showed Musgrave's name against O'Reilly's
+  // €20.89, which is not a number anyone can act on and is indistinguishable
+  // from a real quote. A confirmation that recorded no price genuinely does not
+  // know one, and 0 renders as "—" rather than inventing a figure.
+  const price = override.priceExVat ?? 0;
+
   return {
     ...row,
     bestSupplier: override.supplier,
     bestSupplierName: supplierName,
-    price: override.priceExVat ?? row.price,
+    price,
     // The saving was computed against a supplier nobody is buying from now.
     // Reporting it against the admin's choice would be inventing a comparison
     // that never happened, so it reverts to "no baseline".
     savingsStatus: "no-baseline",
     savings: undefined,
     savingsPct: undefined,
+    // Said out loud rather than left as a blank cell. A line whose price is
+    // unknown still has to be ordered, and the buyer needs to know the figure
+    // is missing rather than zero.
+    warnings: price
+      ? row.warnings
+      : [
+          ...row.warnings,
+          {
+            code: "MISSING_PRICE",
+            message:
+              "The confirmed product was recorded without a price. The supplier " +
+              "basket will quote it.",
+          },
+        ],
     adminConfirmed: {
       supplier: override.supplier,
       supplierSku: override.supplierSku,
@@ -270,6 +299,50 @@ export function confirmedOverReadyRow(
       // The matcher's offers are kept — that is what lets the panel say
       // "O'Reilly lists it at less".
     },
+  };
+}
+
+/**
+ * A matched line an admin struck off, as a line that now needs attention.
+ *
+ * REMOVING A PRODUCT IS NOT REMOVING A LINE.
+ *
+ * The retailer's file asked for this article. An admin rejecting the product
+ * the matcher picked has said "not this one" — they have not said the shop no
+ * longer wants the item. Dropping the row from both tables, which is what
+ * happened before, made the line vanish from the screen entirely: it was not
+ * orderable, not outstanding, and nothing on the page admitted it existed. The
+ * only trace was in the activity trail.
+ *
+ * So it moves to Needs Attention, which is exactly what it now is — a line with
+ * no chosen product, waiting on somebody to pick one. `restore` puts the
+ * original match back, and confirming a different product settles it the same
+ * way any other attention line is settled.
+ *
+ * The counterpart of `settledAsReadyRow`, which moves a line the other way.
+ */
+export function removedAsAttentionRow(
+  row: ReadyToOrderRow,
+  override: JobRowOverride,
+): NeedsAttentionRow | null {
+  if (override.action !== "removed") return null;
+
+  return {
+    kind: "attention",
+    row: row.row,
+    articleCode: row.articleCode,
+    product: row.product,
+    status: "Removed by admin",
+    // The admin's own words when they gave any. A removal with a reason is the
+    // most useful thing on this row — it usually says what was wrong with the
+    // match, which is the next person's starting point.
+    reason:
+      override.reason ??
+      "An admin rejected the product that was matched to this line.",
+    suggestion: "Choose a different product, or restore the original match.",
+    codes: [],
+    ...(row.detail?.requestedPack ? { requestedPack: row.detail.requestedPack } : {}),
+    cases: row.cases,
   };
 }
 
@@ -380,6 +453,16 @@ async function authHeaders(
   return { Authorization: `Bearer ${await requireAccessToken()}`, ...extra };
 }
 
+/**
+ * The header that stops a poll counting as somebody being present.
+ *
+ * The backend's 30-minute inactivity timeout reads an ordinary authenticated
+ * request as activity. These pages refresh on a timer while a job runs, and a
+ * tab left open through a long job would otherwise keep the session alive with
+ * nobody in the room.
+ */
+const PASSIVE = { "X-Activity": "passive" } as const;
+
 /** Turn a failed response into the backend's message rather than a bare code. */
 async function failure(res: Response, fallback: string): Promise<Error> {
   const text = await res.text().catch(() => "");
@@ -421,15 +504,22 @@ export async function createJob(
   return (await res.json()) as CreateJobResponse;
 }
 
-export async function listJobs(): Promise<JobSummary[]> {
-  const res = await fetch(url("/api/jobs"), { headers: await authHeaders() });
+export async function listJobs(opts: { passive?: boolean } = {}): Promise<JobSummary[]> {
+  const res = await fetch(url("/api/jobs"), {
+    headers: await authHeaders(opts.passive ? PASSIVE : {}),
+  });
   if (!res.ok) throw await failure(res, `Could not load jobs (${res.status})`);
   const body = (await res.json()) as { jobs: JobSummary[] };
   return body.jobs ?? [];
 }
 
-export async function getJob(jobId: string): Promise<JobSummary> {
-  const res = await fetch(url(`/api/jobs/${jobId}`), { headers: await authHeaders() });
+export async function getJob(
+  jobId: string,
+  opts: { passive?: boolean } = {},
+): Promise<JobSummary> {
+  const res = await fetch(url(`/api/jobs/${jobId}`), {
+    headers: await authHeaders(opts.passive ? PASSIVE : {}),
+  });
   if (!res.ok) throw await failure(res, `Could not load job (${res.status})`);
   return (await res.json()) as JobSummary;
 }
@@ -464,8 +554,67 @@ export interface JobRowOverride {
   createdAt?: string;
 }
 
-/** Everything accumulated so far — used when opening a finished job. */
-export async function getJobRows(jobId: string): Promise<{
+/**
+ * What a re-check found, for one line.
+ *
+ * The verdict codes are the backend's, deliberately: this screen renders them
+ * and the cart route enforces them, and inventing a second vocabulary here is
+ * how a greyed button and a 409 end up disagreeing about why.
+ */
+export type VerificationResult =
+  | "passed"
+  | "price-decreased"
+  | "price-increased"
+  | "pack-changed"
+  | "product-changed"
+  | "price-missing"
+  | "unavailable";
+
+export interface VerificationChange {
+  field: "sku" | "unitsPerCase" | "unitSize" | "uom" | "price" | "availability";
+  previous?: string | number;
+  next?: string | number;
+}
+
+export interface RowVerification {
+  rowNumber: number;
+  supplier: string;
+  supplierSku: string;
+  /** When the supplier was actually asked. What "fresh" is measured from. */
+  verifiedAt: string;
+  result: VerificationResult;
+  /** Whether this clears the product for the basket. */
+  passed: boolean;
+  available: boolean;
+  priceExVat?: number;
+  previousPriceExVat?: number;
+  unitsPerCase?: number;
+  unitSize?: number;
+  uom?: string;
+  changes?: VerificationChange[];
+  /** Set when a later edit voided this check. */
+  invalidatedAt?: string;
+  invalidatedReason?: string;
+  /**
+   * Still inside the validity window, as the BACKEND measures it.
+   *
+   * Sent rather than computed here on purpose. The window is backend policy,
+   * and a page deciding for itself when a check expired would eventually
+   * disagree with the route that enforces it — showing an enabled button over
+   * a refusal.
+   */
+  fresh: boolean;
+}
+
+/** Why one product cannot go in the basket. Mirrors the backend's codes. */
+export type CartBlockCode =
+  | "verification-required"
+  | "verification-stale"
+  | "verification-invalidated"
+  | "verification-failed"
+  | "verification-other-product";
+
+export interface JobRowsResponse {
   summary: JobSummary;
   readyToOrder: ReadyToOrderRow[];
   needsAttention: NeedsAttentionRow[];
@@ -480,11 +629,72 @@ export async function getJobRows(jobId: string): Promise<{
    * cannot arrive.
    */
   lock?: { locked: boolean; code?: "in-cart" | "expired"; reason?: string };
-}> {
+  /**
+   * A SEPARATE question from `lock`, and the one that decides Add to Cart.
+   *
+   * A job can be perfectly open and completely unorderable: editing asks "is
+   * this record still being worked on" (a day), ordering asks "are these prices
+   * still real" (three hours). The page previously knew only the first, so it
+   * could not explain a cart refusal it had no way to predict.
+   */
+  cartLock?: { locked: boolean; code?: "expired"; reason?: string };
+  /**
+   * The job finished more than a day ago and is kept as a record.
+   *
+   * AGE ALONE, and deliberately its own field rather than something this page
+   * derives. `lock.code === "expired"` looks like the same question and is not:
+   * `jobEditLock` reports `in-cart` before it looks at the clock, so a job whose
+   * lines reached a basket reads as `in-cart` however old it is — and a page
+   * deriving "older than a day" from it would show its order controls on a
+   * four-day-old job.
+   */
+  recordOnly?: boolean;
+  /** Standing verifications, keyed by row number. */
+  verifications?: Record<number, RowVerification>;
+}
+
+/** Everything accumulated so far — used when opening a finished job. */
+export async function getJobRows(
+  jobId: string,
+  opts: { passive?: boolean } = {},
+): Promise<JobRowsResponse> {
   const res = await fetch(url(`/api/jobs/${jobId}/rows`), {
-    headers: await authHeaders(),
+    headers: await authHeaders(opts.passive ? PASSIVE : {}),
   });
   if (!res.ok) throw await failure(res, `Could not load job rows (${res.status})`);
+  return await res.json();
+}
+
+export interface VerifyRowsResponse {
+  jobId: string;
+  results: {
+    rowNumber: number;
+    verification?: RowVerification;
+    /** Set when the line could not be checked at all, rather than failing one. */
+    error?: string;
+  }[];
+  /** The rows now cleared for the basket. */
+  verified: number[];
+}
+
+/**
+ * Re-check these lines against their suppliers, now.
+ *
+ * Called when the retailer tries to add something from a job whose prices have
+ * gone stale — never on a timer, and never for the whole job. Each row is a
+ * live request to a supplier, so this is slow by nature and the caller is
+ * expected to show progress rather than pretend it is instant.
+ */
+export async function verifyJobRows(
+  jobId: string,
+  rows: number[],
+): Promise<VerifyRowsResponse> {
+  const res = await fetch(url(`/api/jobs/${jobId}/verify`), {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(await authHeaders()) },
+    body: JSON.stringify({ rows }),
+  });
+  if (!res.ok) throw await failure(res, `Could not check these products (${res.status})`);
   return await res.json();
 }
 

@@ -26,6 +26,9 @@
 import { useCallback, useEffect, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { isSupabaseConfigured, supabase } from "@/lib/supabase";
+import { reportSession } from "@/lib/api/session";
+import { watchForSignOut } from "@/lib/sessionExpiry";
+import { watchForIdle } from "@/lib/idleTimer";
 import { whoAmI, type Me } from "@/lib/api/me";
 
 /**
@@ -91,6 +94,23 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
     void check();
   }, [check]);
 
+  // An idle tab makes no requests, so nothing would notice the session ending.
+  // supabase-js still attempts a refresh near the token's expiry; with the
+  // session already timed out that fails and emits SIGNED_OUT, which is the
+  // only signal an abandoned tab ever gets.
+  useEffect(() => watchForSignOut(), []);
+
+  // The client half of the inactivity timeout. The backend refuses an idle
+  // session whatever this does — that is the security boundary — but without
+  // it somebody who walked away comes back to a page that still shows their
+  // order and fails the moment they touch it.
+  //
+  // Only while signed in: on the sign-in page there is no session to time out.
+  useEffect(() => {
+    if (state.phase !== "ready") return;
+    return watchForIdle();
+  }, [state.phase]);
+
   if (state.phase === "public") return <>{children}</>;
 
   if (state.phase === "checking" || state.phase === "redirecting") {
@@ -110,6 +130,9 @@ export default function AuthGate({ children }: { children: React.ReactNode }) {
           <button
             type="button"
             onClick={async () => {
+              // Reported BEFORE the sign-out: afterwards there is no token left to
+              // authenticate the report with, and an unauthenticated one is dropped.
+              await reportSession("signed-out");
               await supabase().auth.signOut();
               router.replace("/login");
             }}
