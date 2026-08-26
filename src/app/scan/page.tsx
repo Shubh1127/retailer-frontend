@@ -29,13 +29,19 @@
  * The input is therefore the primary path and is re-focused aggressively, so a
  * stray click does not silently send the next ten beeps into nothing.
  *
- * DUPLICATE READS ARE NOT DUPLICATE PRODUCTS
+ * SCANNING THE SAME BARCODE AGAIN DOES NOT ADD ANOTHER
  *
- * A camera decodes the same barcode many times a second while it stays in
- * frame. Every one of those would otherwise be an item. The same code is
- * ignored for a couple of seconds after it lands — long enough to cover a
- * steady hand, short enough that deliberately re-scanning to count two of
- * something still works.
+ * This was wrong at first and the failure was instructive. A camera decodes the
+ * same barcode many times a second while it stays in frame, and the original
+ * rule — ignore a repeat for two seconds — assumed somebody would move the
+ * product away once it registered. They do not: the screen takes a moment, so
+ * they hold it there to check it worked, and at two seconds the count starts
+ * climbing on its own. The quantity was being set by how long somebody hesitated.
+ *
+ * So a barcode already in the cart is NEVER added again by scanning. It is
+ * reported as already there, its row is highlighted so the beep is visibly
+ * acknowledged, and quantity is changed deliberately with the ＋ and − buttons.
+ * The short window below only covers the gap before the cart has caught up.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -47,9 +53,15 @@ import Pagination, { usePagination } from "@/components/Pagination";
 import { ApiError } from "@/lib/api/client";
 import { cartSupplierLabel, supportsCart, addItems, type CartSupplier } from "@/lib/api/cart";
 import { eur } from "@/lib/mock-data";
-import { classifyBurst, isBarcodeKey, type Keystroke } from "@/lib/scannerInput";
+import {
+  classifyBurst,
+  isBarcodeKey,
+  sameBarcode,
+  type Keystroke,
+} from "@/lib/scannerInput";
 import {
   clearScanCart,
+  discoverScanLine,
   fetchScanPrices,
   getScanCart,
   recordScan,
@@ -59,8 +71,15 @@ import {
   type ScanLine,
 } from "@/lib/api/scan";
 
-/** How long the same code is ignored after it registers. See the header. */
-const DUPLICATE_WINDOW_MS = 2000;
+/**
+ * How long the same code is ignored after it registers.
+ *
+ * A LAST LINE OF DEFENCE, NOT THE RULE. The rule is below: a barcode already in
+ * the cart is never added again by scanning. This window only covers the gap
+ * before the cart has caught up — several camera frames can decode the same
+ * barcode before the first one has come back from the server.
+ */
+const DUPLICATE_WINDOW_MS = 1500;
 
 /** How often the camera is asked to decode. ~7/s is well past a human's pace. */
 const DECODE_INTERVAL_MS = 140;
@@ -84,6 +103,10 @@ export default function ScanPage() {
    * the thing in their hand is doing anything.
    */
   const [scannerSeen, setScannerSeen] = useState(false);
+  /** The row a repeat scan just pointed at, so the beep is acknowledged. */
+  const [highlight, setHighlight] = useState<number | null>(null);
+  /** Lines whose background supplier lookup is still running. */
+  const [discovering, setDiscovering] = useState<number[]>([]);
 
   /**
    * Scans sent but not yet confirmed, newest first.
@@ -103,6 +126,26 @@ export default function ScanPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const lastSeen = useRef<Map<string, number>>(new Map());
+
+  /**
+   * The cart, readable from inside `submitCode` without re-creating it.
+   *
+   * `submitCode` is memoised and is captured by the camera's decode loop and by
+   * the document-level key listener. Adding `cart` to its dependencies would
+   * rebuild both on every scan — tearing down and restarting the camera timer
+   * each time — so the current value is mirrored into a ref instead.
+   */
+  const cartRef = useRef<ScanCart | null>(null);
+  useEffect(() => {
+    cartRef.current = cart;
+  }, [cart]);
+
+  // A highlight is an acknowledgement, not a selection — it fades by itself.
+  useEffect(() => {
+    if (highlight === null) return;
+    const timer = setTimeout(() => setHighlight(null), 1800);
+    return () => clearTimeout(timer);
+  }, [highlight]);
 
   // ---- The cart ------------------------------------------------------------
   const load = useCallback(async () => {
@@ -128,12 +171,31 @@ export default function ScanPage() {
       const code = raw.trim();
       if (!code) return;
 
-      // Duplicate suppression. A camera reads the same barcode continuously
-      // while it is in frame; without this a two-second pause is twenty items.
+      // Frames of the same barcode arriving before the cart has caught up.
       const now = Date.now();
       const seen = lastSeen.current.get(code);
       if (seen !== undefined && now - seen < DUPLICATE_WINDOW_MS) return;
       lastSeen.current.set(code, now);
+
+      // ALREADY IN THE CART — acknowledge it, change nothing.
+      //
+      // Matched on the scanned code AND on the resolved barcode, so the same
+      // product read from a 13-digit shelf edge and a 14-digit outer is still
+      // recognised as the line it already is.
+      const existing = (cartRef.current?.lines ?? []).find(
+        (candidate) =>
+          sameBarcode(candidate.scannedCode, code) || sameBarcode(candidate.gtin14, code),
+      );
+
+      if (existing) {
+        setHighlight(existing.id);
+        setFeedback({
+          kind: "miss",
+          text: `${code} — already in the list (qty ${existing.quantity}). Use ＋ to add more.`,
+          at: Date.now(),
+        });
+        return;
+      }
 
       // On screen NOW, before the request goes out.
       setPending((current) =>
@@ -162,13 +224,46 @@ export default function ScanPage() {
                 // which saves somebody scanning it five more times.
                 text:
                   source === "barcode"
-                    ? `${code} — no supplier we carry stocks this`
+                    ? // Not a verdict yet — the background lookup below is
+                      // about to ask the suppliers directly.
+                      `${code} — not in our catalogues, checking suppliers…`
                     : `${code} — not a barcode we recognise`,
                 at: Date.now(),
               },
         );
 
         await load();
+
+        /**
+         * Nothing of ours holds this barcode — ask the suppliers, in the
+         * background.
+         *
+         * NOT AWAITED, deliberately. It is up to four live searches and takes
+         * seconds; waiting on it here would put that in front of the next beep,
+         * which is the one thing the scanner may not do. The answer lands on a
+         * later refresh, and the row fills itself in.
+         */
+        if (!line.product && source === "barcode") {
+          setDiscovering((current) => [...current, line.id]);
+          void discoverScanLine(line.id)
+            .then((result) => {
+              setFeedback({
+                kind: result.discovered ? "ok" : "miss",
+                text: result.discovered
+                  ? `${code} · found at ${result.name ?? result.supplierId}`
+                  : `${code} — no supplier we carry stocks this`,
+                at: Date.now(),
+              });
+              if (result.discovered) void load();
+            })
+            .catch(() => {
+              // A supplier being unreachable is not worth interrupting a
+              // scanning session for. The Fetch button asks again later.
+            })
+            .finally(() => {
+              setDiscovering((current) => current.filter((id) => id !== line.id));
+            });
+        }
       } catch (error) {
         setFeedback({
           kind: "error",
@@ -569,6 +664,8 @@ export default function ScanPage() {
                 key={line.id}
                 line={line}
                 busy={busy}
+                highlighted={highlight === line.id}
+                discovering={discovering.includes(line.id)}
                 onQuantity={(next) => void changeQuantity(line, next)}
               />
             ))}
@@ -581,35 +678,81 @@ export default function ScanPage() {
   );
 }
 
+/**
+ * The product picture, with somewhere to fall back to.
+ *
+ * TWO FALLBACKS, AND BOTH HAVE BEEN NEEDED. The master row's image comes from
+ * the preferred supplier, which is usually Musgrave — and Musgrave publish
+ * RELATIVE paths, so for a while every mapped product silently had no picture.
+ * That is fixed in the catalogue adapter, but a URL that 404s for any other
+ * reason (a product delisted, a CDN path changed between syncs) should not
+ * leave a broken-image icon on a shop floor.
+ *
+ * So: the master image, then any supplier that publishes one, then the
+ * departmental glyph. Each step is taken only when the previous one actually
+ * failed to load, not guessed at in advance.
+ */
+function ScanThumb({ line }: { line: ScanLine }) {
+  const candidates = [
+    line.product?.imageUrl,
+    ...(line.product?.suppliers ?? []).map((offer) => offer.imageUrl),
+  ].filter((url): url is string => Boolean(url));
+
+  const [attempt, setAttempt] = useState(0);
+  const src = candidates[attempt];
+
+  if (!src) return <ProductGlyph department="General" size={44} />;
+
+  return (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt={line.product?.name ?? line.scannedCode}
+      onError={() => setAttempt((current) => current + 1)}
+      className="h-11 w-11 shrink-0 rounded-lg border border-line bg-white object-contain"
+      loading="lazy"
+    />
+  );
+}
+
 function ScanRow({
   line,
   busy,
+  highlighted,
+  discovering,
   onQuantity,
 }: {
   line: ScanLine;
   busy: boolean;
+  /** A repeat scan just pointed at this row. See the header. */
+  highlighted?: boolean;
+  /** The background supplier lookup for this barcode is still running. */
+  discovering?: boolean;
   onQuantity: (next: number) => void;
 }) {
   const product = line.product;
 
   return (
-    <li className="flex flex-wrap items-center gap-3 p-3">
-      {product?.imageUrl ? (
-        // eslint-disable-next-line @next/next/no-img-element
-        <img
-          src={product.imageUrl}
-          alt={product.name ?? line.scannedCode}
-          className="h-11 w-11 shrink-0 rounded-lg border border-line bg-white object-contain"
-          loading="lazy"
-        />
-      ) : (
-        <ProductGlyph department="General" size={44} />
-      )}
+    <li
+      className={`flex flex-wrap items-center gap-3 p-3 transition-colors duration-500 ${
+        highlighted ? "bg-amber-50" : ""
+      }`}
+    >
+      <ScanThumb line={line} />
 
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="text-[13.5px] text-ink">
-            {product?.name ?? <span className="text-ink-soft">Unrecognised barcode</span>}
+            {product?.name ??
+              (discovering ? (
+                // Honest about what is happening: no catalogue of ours holds
+                // this, so the suppliers are being asked directly. Saying
+                // "unrecognised" while that runs states a verdict we do not
+                // have yet.
+                <span className="text-ink-soft">Checking suppliers…</span>
+              ) : (
+                <span className="text-ink-soft">Unrecognised barcode</span>
+              ))}
           </span>
 
           {/* WHERE THIS CAME FROM. "Cross-referenced across three wholesalers"

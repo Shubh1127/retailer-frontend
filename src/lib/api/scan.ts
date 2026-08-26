@@ -123,6 +123,23 @@ export function clearScanCart(): Promise<{ cart: ScanCart }> {
 }
 
 /**
+ * Ask the suppliers about ONE unrecognised barcode, in the background.
+ *
+ * Fired and forgotten by the scanner: it takes seconds — up to four live
+ * searches, main supplier first — so nothing waits on it and the answer turns
+ * up on a later refresh. Idempotent by row, so calling it twice for the same
+ * line costs one lookup.
+ */
+export function discoverScanLine(lineId: number): Promise<{
+  discovered: boolean;
+  supplierId?: string;
+  name?: string;
+  reason?: string;
+}> {
+  return apiFetch(`/api/scan/cart/lines/${lineId}/discover`, { method: "POST" });
+}
+
+/**
  * THE ONE CALL THAT CONTACTS SUPPLIERS.
  *
  * Fetches a live price for every supplier SKU behind everything in the cart.

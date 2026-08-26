@@ -94,3 +94,24 @@ export function isBarcodeKey(event: {
   if (event.ctrlKey || event.metaKey || event.altKey) return false;
   return event.key.length === 1 || event.key === 'Enter';
 }
+
+/**
+ * Are these two codes the same barcode?
+ *
+ * GTIN-14 IS THE ZERO-PADDED SUPERSET of EAN-8, UPC-12 and EAN-13, so one
+ * product legitimately reaches us spelled several ways: a shelf edge prints
+ * 5054267013926 and the outer case carries 05054267013926. Comparing them as
+ * text says they are different products.
+ *
+ * That mattered more than it looks. The scan page refuses to re-add a barcode
+ * already in the cart — but the refusal is a string comparison, and the BACKEND
+ * merges on the canonical form and ADDS the quantity. So a mismatch here does
+ * not produce a second line, it silently increments the first: exactly the bug
+ * the refusal exists to prevent, reappearing through the one spelling the guard
+ * did not catch.
+ */
+export function sameBarcode(a: string | undefined, b: string | undefined): boolean {
+  if (!a || !b) return false;
+  const significant = (value: string) => value.trim().replace(/^0+/, '');
+  return significant(a) === significant(b) && significant(a) !== '';
+}
