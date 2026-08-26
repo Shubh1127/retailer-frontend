@@ -369,6 +369,7 @@ export function rowNeedsCheck(
 export function CartCell({
   row,
   cart,
+  quantity,
   verification,
   cartLocked,
   isRecord,
@@ -376,6 +377,15 @@ export function CartCell({
 }: {
   row: ReadyToOrderRow;
   cart: CartState;
+  /**
+   * How many cases to add, from the Qty column.
+   *
+   * Quantity lives in ONE place on the row, and it is not this cell. A buyer
+   * decides how many they want before adding, so the control belongs beside the
+   * number, not behind an Add button that has already committed. Defaults to
+   * what the order file asked for.
+   */
+  quantity?: number;
   /** This line's standing check, if it has one. */
   verification?: RowVerification;
   /** Whether the job's prices are old enough for a check to be required. */
@@ -409,6 +419,8 @@ export function CartCell({
   }
 
   const line = cart.lineFor(supplier, sku);
+  // The Qty column's number when there is one, else what the file asked for.
+  const cases = Math.max(1, quantity ?? row.cases);
 
   // NOT in the basket — an Add button rather than the words "Not Added".
   // The row already knows the supplier and how many cases the file asked for,
@@ -500,11 +512,11 @@ export function CartCell({
         <button
           type="button"
           disabled={isBusy || cart.isLoading || !basketReady}
-          onClick={() => void cart.addOne(supplier, sku, row.cases, row.product)}
+          onClick={() => void cart.addOne(supplier, sku, cases, row.product)}
           className="rounded-md border border-teal-600 px-2 py-1 text-[11.5px] font-medium text-teal-700 hover:bg-teal-50 disabled:opacity-40"
           title={
             basketReady
-              ? `Add ${row.cases} × ${row.product} to the ${label(supplier)} basket`
+              ? `Add ${cases} × ${row.product} to the ${label(supplier)} basket`
               : basketStatus === "unavailable"
                 ? `The ${label(supplier)} basket could not be read, so its contents are unknown. Adding now could duplicate a line you already have.`
                 : `Connecting to ${label(supplier)}. The basket has to be read before anything can be added to it.`
@@ -516,7 +528,7 @@ export function CartCell({
               ? basketStatus === "unavailable"
                 ? "Unavailable"
                 : "Connecting…"
-              : `＋ Add${row.cases > 1 ? ` ${row.cases}` : ""}`}
+              : `＋ Add${cases > 1 ? ` ${cases}` : ""}`}
         </button>
 
         {/* Shown only where it means something: on a job fresh enough not to
@@ -543,72 +555,143 @@ export function CartCell({
     );
   }
 
-  const isBusy = cart.busyKey === `${supplier}:${line.basketItemId}`;
-
+  // IN THE BASKET — a status, not a control.
+  //
+  // The plus/minus used to live here, which put the quantity in two places on
+  // one row: a buyer set it before adding and then changed it somewhere else
+  // afterwards. It is now solely the Qty column's, and this cell answers one
+  // question — is it in, or not.
   return (
-    <div className="flex flex-col items-start gap-1">
-      <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11.5px] font-medium text-emerald-700">
-        🟢 In {label(supplier)}
+    <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11.5px] font-medium text-emerald-700">
+      🟢 In {label(supplier)}
+    </span>
+  );
+}
+
+/**
+ * How many cases of this line to order.
+ *
+ * ONE control, TWO meanings, and which one applies is decided by whether the
+ * product is already in the basket:
+ *
+ *   not yet added   a draft the buyer adjusts before committing. Local, costs
+ *                   nothing, and the Add button beside it uses this number.
+ *   already added   the basket's own quantity. Every press is a live change at
+ *                   the supplier, and at one the minus becomes a bin — because
+ *                   "decrement" and "remove from a real order" should not be
+ *                   the same click landing at the end of a long press.
+ *
+ * The draft is held by the page rather than here, because the Add button in the
+ * next column has to read it.
+ */
+export function QtyCell({
+  row,
+  cart,
+  quantity,
+  onQuantityChange,
+  isRecord,
+}: {
+  row: ReadyToOrderRow;
+  cart: CartState;
+  /** The draft quantity for this row. Defaults to what the file asked for. */
+  quantity?: number;
+  onQuantityChange: (next: number) => void;
+  isRecord?: boolean;
+}) {
+  const sku = row.detail.selected?.sku;
+  const supplier = row.bestSupplier as CartSupplier;
+  const draft = Math.max(1, quantity ?? row.cases);
+
+  // Nothing orderable, nothing to count. The file's own figure is still shown,
+  // because it is what the retailer asked for even if nobody can supply it.
+  if (!sku || !supportsCart(supplier)) {
+    return <span className="text-[13px] tabular-nums text-ink-faint">{row.cases}</span>;
+  }
+
+  const line = cart.lineFor(supplier, sku);
+
+  // A job kept as a record is not actionable — see CartCell.
+  if (isRecord) {
+    return (
+      <span className="text-[13px] tabular-nums text-ink-soft">
+        {line ? line.quantity : row.cases}
       </span>
+    );
+  }
+
+  // ---- Not in the basket: a local draft ------------------------------------
+  if (!line) {
+    return (
       <div className="flex items-center gap-1">
-        {/* At one, decrementing means removing — so it says so. The supplier's
-            own basket does the same: minus is disabled and a bin appears, which
-            makes "this will take it out of the cart" a deliberate click rather
-            than an accident at the end of a long press. */}
-        {line.quantity <= 1 ? (
-          <button
-            type="button"
-            disabled={isBusy}
-            onClick={() =>
-              void cart.changeQuantity(supplier, line.basketItemId, 0, sku)
-            }
-            className="h-6 w-6 rounded border border-line text-[12px] leading-none text-ink-soft hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
-            aria-label={`Remove ${row.product} from the basket`}
-            title="Remove from basket"
-          >
-            🗑
-          </button>
-        ) : (
-          <button
-            type="button"
-            disabled={isBusy}
-            onClick={() =>
-              void cart.changeQuantity(
-                supplier,
-                line.basketItemId,
-                line.quantity - 1,
-                sku,
-              )
-            }
-            className="h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
-            aria-label={`Decrease ${row.product}`}
-          >
-            −
-          </button>
-        )}
-        <span className="w-7 text-center text-[13px] tabular-nums text-ink">
-          {isBusy ? "…" : line.quantity}
-        </span>
         <button
           type="button"
-          disabled={isBusy}
-          onClick={() =>
-            void cart.changeQuantity(
-              supplier,
-              line.basketItemId,
-              line.quantity + 1,
-              sku,
-            )
-          }
+          disabled={draft <= 1}
+          onClick={() => onQuantityChange(draft - 1)}
           className="h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
-          aria-label={`Increase ${row.product}`}
+          aria-label={`Decrease quantity of ${row.product}`}
+        >
+          −
+        </button>
+        <span className="w-7 text-center text-[13px] tabular-nums text-ink">{draft}</span>
+        <button
+          type="button"
+          onClick={() => onQuantityChange(draft + 1)}
+          className="h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas"
+          aria-label={`Increase quantity of ${row.product}`}
         >
           ＋
         </button>
       </div>
+    );
+  }
+
+  // ---- In the basket: the supplier's own quantity --------------------------
+  const isBusy = cart.busyKey === `${supplier}:${line.basketItemId}`;
+
+  return (
+    <div className="flex items-center gap-1">
+      {line.quantity <= 1 ? (
+        <button
+          type="button"
+          disabled={isBusy}
+          onClick={() => void cart.changeQuantity(supplier, line.basketItemId, 0, sku)}
+          className="h-6 w-6 rounded border border-line text-[12px] leading-none text-ink-soft hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+          aria-label={`Remove ${row.product} from the basket`}
+          title="Remove from basket"
+        >
+          🗑
+        </button>
+      ) : (
+        <button
+          type="button"
+          disabled={isBusy}
+          onClick={() =>
+            void cart.changeQuantity(supplier, line.basketItemId, line.quantity - 1, sku)
+          }
+          className="h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
+          aria-label={`Decrease ${row.product}`}
+        >
+          −
+        </button>
+      )}
+      <span className="w-7 text-center text-[13px] tabular-nums text-ink">
+        {isBusy ? "…" : line.quantity}
+      </span>
+      <button
+        type="button"
+        disabled={isBusy}
+        onClick={() =>
+          void cart.changeQuantity(supplier, line.basketItemId, line.quantity + 1, sku)
+        }
+        className="h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
+        aria-label={`Increase ${row.product}`}
+      >
+        ＋
+      </button>
     </div>
   );
 }
+
 
 // ---------------------------------------------------------------------------
 // Add-all bar, modal and result

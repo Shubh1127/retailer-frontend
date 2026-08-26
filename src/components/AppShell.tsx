@@ -17,6 +17,7 @@ import ThemeToggle from "@/components/ThemeToggle";
 const tabs = [
   { href: "/dashboard", label: "Dashboard", enabled: true },
   { href: "/jobs", label: "Jobs", enabled: true },
+  { href: "/scan", label: "Scan", enabled: true },
   { href: "/product-search", label: "Product search", enabled: true },
   { href: "/orders", label: "Order list", enabled: true },
   { href: "/compare", label: "Compare", enabled: false },

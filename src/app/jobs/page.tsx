@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import AppShell from "@/components/AppShell";
+import Pagination, { usePagination } from "@/components/Pagination";
 import {
   clockOf,
   downloadReport,
@@ -71,6 +72,16 @@ export default function JobsPage() {
     return () => clearInterval(timer);
   }, [jobs, load]);
 
+  /**
+   * Ten jobs a page.
+   *
+   * `resetKey` is the job COUNT, not the list: a new upload appears at the top
+   * and should be visible without hunting for it. Keying on the list itself
+   * would re-page on every poll — the list is refetched every few seconds while
+   * a job runs — and yank the page back under whoever is reading it.
+   */
+  const paged = usePagination(jobs, { resetKey: jobs.length });
+
   return (
     <AppShell active="Dashboard">
       <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
@@ -127,7 +138,7 @@ export default function JobsPage() {
                 </tr>
               </thead>
               <tbody>
-                {jobs.map((job) => (
+                {paged.items.map((job) => (
                   <tr
                     key={job.jobId}
                     className="border-b border-line last:border-0 hover:bg-canvas/60"
@@ -182,6 +193,8 @@ export default function JobsPage() {
               </tbody>
             </table>
           </div>
+
+          <Pagination paged={paged} label="jobs" />
         </div>
       )}
     </AppShell>

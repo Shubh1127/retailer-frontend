@@ -24,6 +24,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import AppShell from "@/components/AppShell";
+import Pagination, { usePagination } from "@/components/Pagination";
 import {
   clearOrderList,
   getOrderList,
@@ -135,6 +136,11 @@ export default function OrdersPage() {
   }, [router]);
 
   const lines = list?.lines ?? [];
+
+  // Ten lines a page. `resetKey` is the count, so removing a line does not
+  // jump the page, but importing a file — which changes the count a lot —
+  // starts at the top where the new lines are.
+  const paged = usePagination(lines, { resetKey: lines.length });
   const totalCases = lines.reduce((sum, line) => sum + line.cases, 0);
 
   return (
@@ -245,7 +251,7 @@ export default function OrdersPage() {
           </div>
         ) : (
           <ul className="divide-y divide-line">
-            {lines.map((line) => (
+            {paged.items.map((line) => (
               <li key={line.id} className="flex items-center gap-3 p-3">
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-[13.5px] font-medium text-ink">
@@ -304,6 +310,8 @@ export default function OrdersPage() {
             ))}
           </ul>
         )}
+
+        <Pagination paged={paged} label="lines" />
       </div>
 
       <p className="mt-3 text-[11.5px] text-ink-faint">

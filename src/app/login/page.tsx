@@ -4,8 +4,9 @@
  * The authentication page.
  *
  * A real page rather than a form the gate draws over whatever you asked for, so
- * it can be linked to from the landing page, bookmarked, and returned to after
- * a failed attempt.
+ * it can be bookmarked and returned to after a failed attempt. It is also the
+ * ONLY public route in the app: there is no landing page, and `/` redirects
+ * into the gated dashboard.
  *
  * `?next=` carries where the visitor was heading. Somebody who follows a link to
  * a job and gets stopped here should land on that job once they sign in, not on
@@ -13,9 +14,8 @@
  */
 
 import { Suspense, useCallback, useEffect, useState } from "react";
-import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
-import SignInForm, { type AuthMode } from "@/components/SignInForm";
+import SignInForm from "@/components/SignInForm";
 import { isSupabaseConfigured, accessToken } from "@/lib/supabase";
 import { whoAmI } from "@/lib/api/me";
 
@@ -24,7 +24,6 @@ function LoginPanel() {
   const params = useSearchParams();
 
   const next = params.get("next") || "/dashboard";
-  const mode: AuthMode = params.get("mode") === "signup" ? "sign-up" : "sign-in";
   const reason = params.get("reason");
 
   const [checking, setChecking] = useState(true);
@@ -100,7 +99,6 @@ function LoginPanel() {
 
   return (
     <SignInForm
-      initialMode={mode}
       onSignedIn={onSignedIn}
       {...(message ? { message } : {})}
     />
@@ -110,26 +108,19 @@ function LoginPanel() {
 export default function LoginPage() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-canvas px-6 py-12">
-      <Link href="/" className="mb-6 flex items-center gap-2">
+      <div className="mb-6 flex items-center gap-2">
         <span className="flex h-7 w-7 items-center justify-center rounded-md bg-teal-500 text-[13px] font-bold text-white">
           R
         </span>
         <span className="text-[15px] font-semibold tracking-tight text-ink">
           RetailCompare
         </span>
-      </Link>
+      </div>
 
       {/* useSearchParams needs a Suspense boundary for a static export. */}
       <Suspense fallback={<div className="text-[13px] text-ink-soft">Loading…</div>}>
         <LoginPanel />
       </Suspense>
-
-      <Link
-        href="/"
-        className="mt-6 text-[12.5px] text-ink-soft hover:text-ink"
-      >
-        ← Back to the homepage
-      </Link>
     </main>
   );
 }

@@ -34,11 +34,11 @@ import { whoAmI, type Me } from "@/lib/api/me";
 /**
  * Routes a signed-out visitor may see.
  *
- * The marketing homepage is public because it is what convinces somebody to
- * sign up; `/login` obviously has to be, or signing in would require being
- * signed in.
+ * Only the login screen. There is no public homepage — `/` redirects to the
+ * dashboard, which is gated like everything else, so a signed-out visitor
+ * arriving at the root is sent here rather than shown a page.
  */
-const PUBLIC_PATHS = new Set(["/", "/login"]);
+const PUBLIC_PATHS = new Set(["/login"]);
 
 function isPublic(pathname: string): boolean {
   return PUBLIC_PATHS.has(pathname);

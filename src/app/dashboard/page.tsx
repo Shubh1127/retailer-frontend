@@ -34,12 +34,14 @@ import {
 } from "react";
 import Link from "next/link";
 import AppShell from "@/components/AppShell";
-import { CartBar, CartCell, useCart } from "@/components/Cart";
+import { CartBar, CartCell, QtyCell, useCart } from "@/components/Cart";
 import { SupplierPriceCell, supplierColumns } from "@/components/SupplierPrices";
 import { sameDisplaySupplier, supplierLabel } from "@/lib/api/cart";
 // The dashboard already shows live progress counts of its own, so only the
 // skeleton is needed here.
 import { TableSkeleton } from "@/components/TableSkeleton";
+import Pagination, { usePagination } from "@/components/Pagination";
+import QuickProductSearch from "@/components/QuickProductSearch";
 import ProductImage from "@/components/ProductImage";
 import {
   createJob,
@@ -645,6 +647,17 @@ export default function DashboardPage() {
     });
   }, [readyRows, query, sortKey, sortDirection]);
 
+  /**
+   * Ten rows a page, matching the size of a processing batch.
+   *
+   * `resetKey` is the tab plus the search, so switching tab or narrowing the
+   * search starts at page one — landing on page 4 of a freshly filtered list
+   * looks like the filter returned something unrelated.
+   *
+   * Deliberately NOT keyed on the row count. Batches arrive while a job runs,
+   * and re-paging to the top every fifteen seconds would yank the table out
+   * from under whoever is reading it.
+   */
   const visibleAttention = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const filtered = needle
@@ -657,6 +670,14 @@ export default function DashboardPage() {
       : attentionRows;
     return [...filtered].sort((a, b) => a.row - b.row);
   }, [attentionRows, query]);
+
+  // How many cases the buyer wants, per row, before it goes in a basket. The
+  // Qty column edits it; the Cart column's Add button sends it. See QtyCell.
+  const [draftQty, setDraftQty] = useState<Record<number, number>>({});
+
+  const pagedReady = usePagination(visibleReady, { resetKey: `ready:${query}` });
+  const pagedAttention = usePagination(visibleAttention, { resetKey: `attention:${query}` });
+  const paged = tab === "ready" ? pagedReady : pagedAttention;
 
   const totalSavings = useMemo(
     () => readyRows.reduce((sum, row) => sum + (row.savings ?? 0) * row.cases, 0),
@@ -701,6 +722,12 @@ export default function DashboardPage() {
               The Order List puts a reviewable step in front of that — and it is
               one way in rather than two, so the two cannot drift apart. */}
           <Link
+            href="/scan"
+            className="rounded-md border border-line px-3 py-2 text-[13px] font-medium text-ink-soft hover:bg-canvas hover:text-ink"
+          >
+            📷 Scan
+          </Link>
+          <Link
             href="/orders"
             className="inline-flex items-center gap-2 rounded-md bg-teal-600 px-3.5 py-2 text-[13px] font-medium text-white hover:bg-teal-700"
           >
@@ -715,6 +742,8 @@ export default function DashboardPage() {
           {notice}
         </div>
       )}
+
+      <QuickProductSearch />
 
       {!job ? (
         // NO LONGER A DROPZONE.
@@ -915,11 +944,12 @@ export default function DashboardPage() {
                         onSort={onSort}
                         align="right"
                       />
+                      <th className="px-3 py-2 text-left font-medium">Qty</th>
                       <th className="px-3 py-2 text-left font-medium">Cart</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleReady.map((row) => {
+                    {pagedReady.items.map((row) => {
                       const decision = decisions.get(row.row);
                       return (
                       <tr
@@ -1036,7 +1066,25 @@ export default function DashboardPage() {
                           <SavingsCell row={row} />
                         </td>
                         <td className="px-3 py-2">
-                          <CartCell row={row} cart={cart} />
+                          <QtyCell
+                            row={row}
+                            cart={cart}
+                            {...(draftQty[row.row] !== undefined
+                              ? { quantity: draftQty[row.row] }
+                              : {})}
+                            onQuantityChange={(next) =>
+                              setDraftQty((current) => ({ ...current, [row.row]: next }))
+                            }
+                          />
+                        </td>
+                        <td className="px-3 py-2">
+                          <CartCell
+                            row={row}
+                            cart={cart}
+                            {...(draftQty[row.row] !== undefined
+                              ? { quantity: draftQty[row.row] }
+                              : {})}
+                          />
                         </td>
                       </tr>
                       );
@@ -1059,7 +1107,7 @@ export default function DashboardPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleAttention.map((row) => (
+                    {pagedAttention.items.map((row) => (
                       <tr
                         key={row.row}
                         className="border-b border-line align-top last:border-0 hover:bg-canvas/60"
@@ -1093,6 +1141,8 @@ export default function DashboardPage() {
                     : "Nothing here."}
               </div>
             )}
+
+            <Pagination paged={paged} label="products" />
           </div>
         </>
       )}

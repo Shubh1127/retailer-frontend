@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import AppShell from "@/components/AppShell";
-import { CartBar, CartCell, useCart } from "@/components/Cart";
+import { CartBar, CartCell, QtyCell, useCart } from "@/components/Cart";
 import { SupplierPriceCell, supplierColumns } from "@/components/SupplierPrices";
 import { ProcessingBanner, TableSkeleton } from "@/components/TableSkeleton";
 import {
@@ -31,6 +31,7 @@ import {
 } from "@/lib/api/jobs";
 import { supplierLabel } from "@/lib/api/cart";
 import ProductImage from "@/components/ProductImage";
+import Pagination, { usePagination } from "@/components/Pagination";
 
 type Tab = "ready" | "attention";
 
@@ -365,6 +366,23 @@ export default function JobDetailsPage({
     );
   }, [orderable, query]);
 
+  // Ten products a page, matching the size of a processing batch. Reset on the
+  // tab and the search, so a narrowed list starts at its first result rather
+  // than on whatever page number happened to be showing.
+  /**
+   * How many cases the buyer wants, per row, before it goes in a basket.
+   *
+   * Held here rather than in the cell because two columns read it: the Qty
+   * column edits it and the Cart column's Add button sends it. Absent means
+   * "whatever the order file asked for" — no row is seeded, so a file's own
+   * figures survive untouched until somebody changes one.
+   */
+  const [draftQty, setDraftQty] = useState<Record<number, number>>({});
+
+  const pagedReady = usePagination(visibleReady, { resetKey: `ready:${query}` });
+  const pagedAttention = usePagination(visibleAttention, { resetKey: `attention:${query}` });
+  const paged = tab === "ready" ? pagedReady : pagedAttention;
+
   /**
    * Savings over what is ACTUALLY orderable, not over the pipeline's raw list.
    *
@@ -644,8 +662,9 @@ export default function JobDetailsPage({
                       <th className="px-3 py-2 text-left font-medium">
                         Selected product
                       </th>
-                      <th className="px-3 py-2 text-left font-medium">Supplier</th>
-                      {/* One column per supplier; the winner's cell is green. */}
+                      {/* No Supplier column: the winning supplier is already
+                          the green cell in the price columns below, and naming
+                          it again in words was the same fact twice. */}
                       {priceColumns.map((column) => (
                         <th
                           key={column.id}
@@ -655,11 +674,12 @@ export default function JobDetailsPage({
                         </th>
                       ))}
                       <th className="px-3 py-2 text-right font-medium">Savings</th>
+                      <th className="px-3 py-2 text-left font-medium">Qty</th>
                       <th className="px-3 py-2 text-left font-medium">Cart</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleReady.map((row) => (
+                    {pagedReady.items.map((row) => (
                       <tr
                         key={row.row}
                         className="border-b border-line last:border-0 hover:bg-canvas/60"
@@ -689,9 +709,6 @@ export default function JobDetailsPage({
                             </div>
                           </div>
                         </td>
-                        <td className="px-3 py-2 text-ink-soft">
-                          {row.bestSupplierName}
-                        </td>
                         {priceColumns.map((column) => (
                           <SupplierPriceCell
                             key={column.id}
@@ -712,9 +729,25 @@ export default function JobDetailsPage({
                           )}
                         </td>
                         <td className="px-3 py-2">
+                          <QtyCell
+                            row={row}
+                            cart={cart}
+                            {...(draftQty[row.row] !== undefined
+                              ? { quantity: draftQty[row.row] }
+                              : {})}
+                            onQuantityChange={(next) =>
+                              setDraftQty((current) => ({ ...current, [row.row]: next }))
+                            }
+                            isRecord={isRecord}
+                          />
+                        </td>
+                        <td className="px-3 py-2">
                           <CartCell
                             row={row}
                             cart={cart}
+                            {...(draftQty[row.row] !== undefined
+                              ? { quantity: draftQty[row.row] }
+                              : {})}
                             verification={verifications[row.row]}
                             cartLocked={cartLock?.locked === true}
                             isRecord={isRecord}
@@ -741,7 +774,7 @@ export default function JobDetailsPage({
                     </tr>
                   </thead>
                   <tbody>
-                    {visibleAttention.map((row) => (
+                    {pagedAttention.items.map((row) => (
                       <tr
                         key={row.row}
                         className="border-b border-line align-top last:border-0 hover:bg-canvas/60"
@@ -771,6 +804,8 @@ export default function JobDetailsPage({
                 {query ? "No products match this search." : "Nothing here."}
               </div>
             )}
+
+            <Pagination paged={paged} label="products" />
           </div>
         </>
       )}
