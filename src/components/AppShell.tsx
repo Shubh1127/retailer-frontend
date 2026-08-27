@@ -13,6 +13,7 @@ import {
 import { reportSession } from "@/lib/api/session";
 import { supabase } from "@/lib/supabase";
 import ThemeToggle from "@/components/ThemeToggle";
+import MobileTabBar from "@/components/MobileTabBar";
 
 const tabs = [
   { href: "/dashboard", label: "Dashboard", enabled: true },
@@ -20,11 +21,14 @@ const tabs = [
   { href: "/scan", label: "Scan", enabled: true },
   { href: "/product-search", label: "Product search", enabled: true },
   { href: "/orders", label: "Order list", enabled: true },
-  { href: "/compare", label: "Compare", enabled: false },
   { href: "/baskets", label: "Baskets", enabled: true },
-  { href: "/reconcile", label: "Reconcile", enabled: false },
-  { href: "/mappings", label: "Mappings", enabled: false },
-  { href: "/suppliers", label: "Suppliers", enabled: true },
+  // Compare, Reconcile and Mappings used to sit here greyed out with a
+  // "Coming soon" tooltip. Six months of that teaches people to read past the
+  // nav rather than along it, and they cost width the real destinations wanted.
+  // They come back when they exist.
+  //
+  // Suppliers and Account are reachable from the avatar menu instead — see
+  // AccountMenu. Both are settings rather than work, and the nav is for work.
 ];
 
 function PinIcon() {
@@ -337,6 +341,21 @@ function AccountMenu({ me }: { me: MeResponse["user"] }) {
             </div>
           </div>
 
+          {/* Suppliers only. The account details are already ABOVE — name,
+              store, role — and the theme is the button beside this avatar, so
+              a link called "Account" here would lead to a page repeating what
+              the panel it was opened from already said. It stays a phone
+              destination, where the header does not exist. */}
+          <div className="mt-2 border-t border-line pt-2">
+            <Link
+              href="/suppliers"
+              onClick={close}
+              className="block rounded-md px-2 py-1.5 text-[12.5px] text-ink-soft hover:bg-canvas hover:text-ink"
+            >
+              Suppliers
+            </Link>
+          </div>
+
           <button
             type="button"
             onClick={async () => {
@@ -389,7 +408,14 @@ export default function AppShell({
 
   return (
     <div className="min-h-screen bg-canvas">
-      <header className="sticky top-0 z-40 border-b border-line bg-surface/90 backdrop-blur">
+      {/*
+       * DESKTOP ONLY. On a phone the bottom tab bar is the navigation, and a
+       * header carrying a second copy of it — plus a logo, a theme button and
+       * an avatar — spent the top of a small screen on chrome. Everything it
+       * held is reachable: the tabs from the bar, the account and the theme
+       * from Account, which the bar's last button opens.
+       */}
+      <header className="sticky top-0 z-40 hidden border-b border-line bg-surface/90 backdrop-blur lg:block">
         <div className="mx-auto flex max-w-[1400px] items-center gap-4 px-4 py-2.5 sm:px-6">
           <Link href="/" className="flex shrink-0 items-center gap-2">
             <span className="flex h-7 w-7 items-center justify-center rounded-md bg-teal-500 text-[13px] font-bold text-white">
@@ -455,9 +481,15 @@ export default function AppShell({
           </div>
         </div>
       </header>
-      <main className="mx-auto max-w-[1400px] px-4 py-6 sm:px-6 sm:py-8">
+      {/* `pb-24` on mobile clears the fixed tab bar. Without it the last row
+          of every table sits underneath it, permanently unreachable. */}
+      {/* `pb-24` clears the fixed tab bar; without it the last row of every
+          table sits underneath it, permanently unreachable. */}
+      <main className="mx-auto max-w-[1400px] px-4 pb-24 pt-5 sm:px-6 lg:py-8 lg:pb-8">
         {children}
       </main>
+
+      <MobileTabBar />
     </div>
   );
 }

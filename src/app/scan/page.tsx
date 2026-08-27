@@ -48,6 +48,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
+import MobileScanner from "@/components/MobileScanner";
+import { useIsMobile } from "@/lib/useMediaQuery";
 import ProductGlyph from "@/components/ProductGlyph";
 import Pagination, { usePagination } from "@/components/Pagination";
 import { ApiError } from "@/lib/api/client";
@@ -84,16 +86,41 @@ const DUPLICATE_WINDOW_MS = 1500;
 /** How often the camera is asked to decode. ~7/s is well past a human's pace. */
 const DECODE_INTERVAL_MS = 140;
 
+/**
+ * How long to wait before writing a quantity, so a run of presses is one write.
+ *
+ * Long enough to collect a burst of ＋ presses, short enough that nobody
+ * navigates away before it fires. The screen has already moved; this only
+ * decides when the database catches up.
+ */
+const QUANTITY_FLUSH_MS = 400;
+
 type Feedback = { kind: "ok" | "miss" | "error"; text: string; at: number };
 
 export default function ScanPage() {
   const [cart, setCart] = useState<ScanCart | null>(null);
   const [typed, setTyped] = useState("");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
-  const [busy, setBusy] = useState(false);
+  /**
+   * Emptying the cart, which is the one list action still worth waiting on.
+   *
+   * Quantity changes are optimistic because their outcome is not in doubt.
+   * Clear throws away everything somebody walked a shop to collect, so it says
+   * plainly that it is working rather than blanking the screen and hoping.
+   */
+  const [clearing, setClearing] = useState(false);
   const [pricing, setPricing] = useState(false);
   const [adding, setAdding] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
+  /**
+   * Which scanner the camera button opens.
+   *
+   * A MEDIA QUERY, NOT A CSS CLASS. Rendering both and hiding one would mount
+   * two cameras: the second `getUserMedia` either fails or takes the first's
+   * track, and the visible preview goes black. Only one may exist, so the
+   * component has to know which one it is.
+   */
+  const isMobile = useIsMobile();
   const [cameraError, setCameraError] = useState<string | null>(null);
   /**
    * Whether a hardware scanner has been seen typing.
@@ -279,7 +306,9 @@ export default function ScanPage() {
 
   // ---- The camera ----------------------------------------------------------
   useEffect(() => {
-    if (!cameraOn) return;
+    // On a phone the full-screen scanner owns the camera. Opening a second
+    // stream here would blank whichever one lost the race.
+    if (!cameraOn || isMobile) return;
 
     let cancelled = false;
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -348,7 +377,7 @@ export default function ScanPage() {
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
     };
-  }, [cameraOn, submitCode]);
+  }, [cameraOn, isMobile, submitCode]);
 
   /**
    * A hardware scanner, wherever the page's focus happens to be.
@@ -397,15 +426,85 @@ export default function ScanPage() {
   }, [submitCode]);
 
   // ---- Actions -------------------------------------------------------------
-  const changeQuantity = async (line: ScanLine, next: number) => {
-    setBusy(true);
-    try {
-      const result = next <= 0 ? await removeScanLine(line.id) : await setScanQuantity(line.id, next);
-      setCart(result.cart);
-    } finally {
-      setBusy(false);
-    }
-  };
+
+  /**
+   * Pending quantity writes, one timer per line.
+   *
+   * A buyer correcting 1 to 6 presses ＋ five times in about a second. Sending
+   * five requests wastes four of them, and — worse — they can land out of order
+   * and leave the row showing 4 because the third arrived last. Only the final
+   * number is sent, once the pressing stops.
+   */
+  const flushTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
+
+  useEffect(
+    () => () => {
+      for (const timer of flushTimers.current.values()) clearTimeout(timer);
+    },
+    [],
+  );
+
+  /**
+   * Change a quantity, or remove the line at zero.
+   *
+   * ON SCREEN FIRST, SERVER SECOND. Pressing ＋ used to await a round trip that
+   * re-resolved every line in the cart before answering, and disabled every
+   * other row while it ran — so a list of thirty products froze for as long as
+   * it took, on a click whose outcome was never in doubt.
+   *
+   * The change is applied locally and the write follows. There is nothing to
+   * reconcile on success: the server was told a number and stored it. A FAILURE
+   * puts the old value back and says so, because a quantity that silently
+   * reverted would be worse than one that never moved.
+   */
+  const changeQuantity = useCallback((line: ScanLine, next: number) => {
+    const quantity = Math.max(0, Math.floor(next));
+
+    // The value to roll back to, captured before the optimistic write.
+    const previous = cartRef.current?.lines.find((entry) => entry.id === line.id) ?? line;
+
+    setCart((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        lines:
+          quantity <= 0
+            ? current.lines.filter((entry) => entry.id !== line.id)
+            : current.lines.map((entry) =>
+                entry.id === line.id ? { ...entry, quantity } : entry,
+              ),
+      };
+    });
+
+    const existing = flushTimers.current.get(line.id);
+    if (existing) clearTimeout(existing);
+
+    const restore = (message: string) => {
+      setFeedback({ kind: "error", text: message, at: Date.now() });
+      // Re-read rather than splice the old row back in: by now the local list
+      // may have moved on, and the server is the only thing that knows what is
+      // actually stored.
+      void load();
+    };
+
+    flushTimers.current.set(
+      line.id,
+      setTimeout(() => {
+        flushTimers.current.delete(line.id);
+
+        const write =
+          quantity <= 0 ? removeScanLine(line.id) : setScanQuantity(line.id, quantity);
+
+        void write.catch((error) =>
+          restore(
+            error instanceof ApiError
+              ? `Could not update ${previous.name ?? previous.scannedCode}: ${error.message}`
+              : `Could not update ${previous.name ?? previous.scannedCode}`,
+          ),
+        );
+      }, QUANTITY_FLUSH_MS),
+    );
+  }, [load]);
 
   const price = async () => {
     setPricing(true);
@@ -558,9 +657,14 @@ export default function ScanPage() {
           </p>
         )}
 
-        {cameraOn && (
+        {cameraOn && !isMobile && (
           <div className="mt-3 overflow-hidden rounded-lg border border-line bg-black">
-            <video ref={videoRef} muted playsInline className="mx-auto max-h-64 w-full object-contain" />
+            <video
+              ref={videoRef}
+              muted
+              playsInline
+              className="mx-auto max-h-64 w-full object-contain"
+            />
           </div>
         )}
 
@@ -626,13 +730,26 @@ export default function ScanPage() {
             {lines.length > 0 && (
               <button
                 type="button"
-                disabled={busy}
+                disabled={clearing}
                 onClick={() => {
-                  void clearScanCart().then((result) => setCart(result.cart));
+                  setClearing(true);
+                  void clearScanCart()
+                    .then((result) => setCart(result.cart))
+                    .catch((error) =>
+                      setFeedback({
+                        kind: "error",
+                        text:
+                          error instanceof ApiError
+                            ? error.message
+                            : "Could not clear the list",
+                        at: Date.now(),
+                      }),
+                    )
+                    .finally(() => setClearing(false));
                 }}
-                className="rounded-md border border-line px-3 py-1.5 text-[12.5px] text-ink-soft hover:bg-canvas hover:text-ink"
+                className="rounded-md border border-line px-3 py-1.5 text-[12.5px] text-ink-soft hover:bg-canvas hover:text-ink disabled:opacity-40"
               >
-                Clear
+                {clearing ? "Clearing…" : "Clear"}
               </button>
             )}
           </div>
@@ -663,7 +780,6 @@ export default function ScanPage() {
               <ScanRow
                 key={line.id}
                 line={line}
-                busy={busy}
                 highlighted={highlight === line.id}
                 discovering={discovering.includes(line.id)}
                 onQuantity={(next) => void changeQuantity(line, next)}
@@ -674,6 +790,20 @@ export default function ScanPage() {
 
         <Pagination paged={paged} label="lines" />
       </div>
+
+      {/* Phones only. Everything it needs — the cart, the duplicate rules, the
+          optimistic quantity writes — already lives on this page, so it is
+          handed those rather than owning a second copy of any of them. */}
+      <MobileScanner
+        open={cameraOn && isMobile}
+        onClose={() => setCameraOn(false)}
+        onScan={(code) => void submitCode(code)}
+        cart={cart}
+        onQuantity={changeQuantity}
+        onFetchPrices={price}
+        pricing={pricing}
+        {...(feedback ? { message: feedback.text } : {})}
+      />
     </AppShell>
   );
 }
@@ -717,13 +847,11 @@ function ScanThumb({ line }: { line: ScanLine }) {
 
 function ScanRow({
   line,
-  busy,
   highlighted,
   discovering,
   onQuantity,
 }: {
   line: ScanLine;
-  busy: boolean;
   /** A repeat scan just pointed at this row. See the header. */
   highlighted?: boolean;
   /** The background supplier lookup for this barcode is still running. */
@@ -858,19 +986,21 @@ function ScanRow({
       </div>
 
       <div className="flex items-center gap-1">
+        {/* Never disabled. The change is local and instant; there is nothing
+            in flight for a buyer to wait on. */}
         <button
           type="button"
-          disabled={busy}
           onClick={() => onQuantity(line.quantity - 1)}
           className="h-7 w-7 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
           aria-label={`Decrease ${line.scannedCode}`}
         >
           {line.quantity <= 1 ? "🗑" : "−"}
         </button>
-        <span className="w-8 text-center text-[13.5px] tabular-nums text-ink">{line.quantity}</span>
+        <span className="w-8 text-center text-[13.5px] tabular-nums text-ink">
+          {line.quantity}
+        </span>
         <button
           type="button"
-          disabled={busy}
           onClick={() => onQuantity(line.quantity + 1)}
           className="h-7 w-7 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
           aria-label={`Increase ${line.scannedCode}`}

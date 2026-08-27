@@ -19,6 +19,7 @@ import {
   isBarcodeKey,
   MAX_HUMAN_GAP_MS,
   MIN_BARCODE_LENGTH,
+  sameBarcode,
   type Keystroke,
 } from "./scannerInput";
 
@@ -121,5 +122,33 @@ describe("which keys count", () => {
     ];
 
     expect(classifyBurst(strokes).code).toBe("5054267013926");
+  });
+});
+
+describe("the same barcode, spelled differently", () => {
+  it("matches a shelf edge against an outer case", () => {
+    // EAN-13 as printed on the shelf, GTIN-14 as printed on the case. One
+    // product. Comparing as text says two.
+    expect(sameBarcode("5054267013926", "05054267013926")).toBe(true);
+    expect(sameBarcode("05054267013926", "5054267013926")).toBe(true);
+  });
+
+  it("matches whatever the padding", () => {
+    expect(sameBarcode("00000050106375", "50106375")).toBe(true);
+  });
+
+  it("keeps genuinely different products apart", () => {
+    expect(sameBarcode("5054267013926", "5000354919336")).toBe(false);
+    // Not a prefix match: a shorter code is not "the same product, padded".
+    expect(sameBarcode("505426701392", "5054267013926")).toBe(false);
+  });
+
+  it("never matches nothing against nothing", () => {
+    // Two lines that both failed to resolve are not the same product, and a
+    // guard that said they were would silently merge unrelated scans.
+    expect(sameBarcode(undefined, undefined)).toBe(false);
+    expect(sameBarcode("", "")).toBe(false);
+    expect(sameBarcode("0", "00")).toBe(false);
+    expect(sameBarcode("5054267013926", undefined)).toBe(false);
   });
 });

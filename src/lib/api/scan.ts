@@ -107,15 +107,26 @@ export function recordScan(
   });
 }
 
-export function setScanQuantity(lineId: number, quantity: number): Promise<{ cart: ScanCart }> {
-  return apiFetch<{ cart: ScanCart }>(`/api/scan/cart/lines/${lineId}`, {
+/**
+ * Change a line's quantity.
+ *
+ * Answers with an acknowledgement, NOT the cart. A quantity cannot change which
+ * suppliers stock a product, so there is nothing to re-resolve — and the caller
+ * has already applied the change on screen. See the route for what this used to
+ * cost.
+ */
+export function setScanQuantity(
+  lineId: number,
+  quantity: number,
+): Promise<{ ok: true; id: number; quantity: number }> {
+  return apiFetch(`/api/scan/cart/lines/${lineId}`, {
     method: "PATCH",
     body: { quantity },
   });
 }
 
-export function removeScanLine(lineId: number): Promise<{ cart: ScanCart }> {
-  return apiFetch<{ cart: ScanCart }>(`/api/scan/cart/lines/${lineId}`, { method: "DELETE" });
+export function removeScanLine(lineId: number): Promise<{ ok: true; id: number }> {
+  return apiFetch(`/api/scan/cart/lines/${lineId}`, { method: "DELETE" });
 }
 
 export function clearScanCart(): Promise<{ cart: ScanCart }> {
