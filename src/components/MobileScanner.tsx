@@ -37,6 +37,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 
+import ScanThumb from "@/components/ScanThumb";
 import { eur } from "@/lib/mock-data";
 import { cartSupplierLabel } from "@/lib/api/cart";
 import type { ScanCart, ScanLine } from "@/lib/api/scan";
@@ -515,6 +516,8 @@ function SheetRow({
   return (
     <li className="p-3">
       <div className="flex items-start gap-3">
+        <ScanThumb line={line} size={44} />
+
         <div className="min-w-0 flex-1">
           <p className="text-[13.5px] text-ink">
             {line.product?.name ?? (

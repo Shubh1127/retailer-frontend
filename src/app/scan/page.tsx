@@ -74,14 +74,30 @@ import {
 } from "@/lib/api/scan";
 
 /**
- * How long the same code is ignored after it registers.
+ * Barcodes accepted in this session, so a repeat is refused INSTANTLY.
  *
- * A LAST LINE OF DEFENCE, NOT THE RULE. The rule is below: a barcode already in
- * the cart is never added again by scanning. This window only covers the gap
- * before the cart has caught up — several camera frames can decode the same
- * barcode before the first one has come back from the server.
+ * WHY A TIME WINDOW WAS NOT ENOUGH, AND THE MEASUREMENT THAT SHOWED IT.
+ *
+ * The rule has always been "a barcode already in the cart is never added again
+ * by scanning" — but the cart it checked came back from the server, and reading
+ * the cart re-resolves EVERY line against the master table and the catalogues.
+ * On a cart of any size that takes longer than the 1.5s window the guard leaned
+ * on. So somebody holding a product in front of the camera got: first frame
+ * accepted, window expires, cart still in flight, second frame accepted — and
+ * the quantity climbed on its own, which is the exact bug the guard exists to
+ * prevent.
+ *
+ * A set held here is updated SYNCHRONOUSLY, before the request goes out, so
+ * there is no gap for a second frame to fall through. It is keyed on the
+ * significant digits, so a 13-digit shelf edge and a 14-digit outer are one
+ * entry.
+ *
+ * Entries are dropped when a line is removed or the list is cleared, because
+ * then re-scanning it is a deliberate act rather than a stutter.
  */
-const DUPLICATE_WINDOW_MS = 1500;
+function barcodeKey(code: string): string {
+  return code.trim().replace(/^0+/, "");
+}
 
 /** How often the camera is asked to decode. ~7/s is well past a human's pace. */
 const DECODE_INTERVAL_MS = 140;
@@ -139,11 +155,28 @@ export default function ScanPage() {
   useEffect(() => {
     if (!isMobile) return;
     const params = new URLSearchParams(window.location.search);
-    if (params.get("camera") !== "1") return;
-
-    setCameraOn(true);
-    window.history.replaceState(null, "", "/scan");
+    if (params.get("camera") === "1") setCameraOn(true);
   }, [isMobile]);
+
+  /**
+   * The URL says whether the camera is open, so a refresh does not close it.
+   *
+   * The flag used to be stripped the moment it was read, which meant reloading
+   * mid-scan dropped somebody back to a list with the viewfinder shut — on a
+   * phone, in an aisle, holding a product. Keeping it in the URL makes the
+   * camera part of where you ARE rather than something that happened on the
+   * way in, so refresh and back both behave.
+   *
+   * `replaceState`, never `push`: opening and closing a viewfinder should not
+   * fill the back stack with entries that look identical.
+   */
+  useEffect(() => {
+    if (!isMobile) return;
+    const wanted = cameraOn ? "/scan?camera=1" : "/scan";
+    if (window.location.pathname + window.location.search !== wanted) {
+      window.history.replaceState(null, "", wanted);
+    }
+  }, [cameraOn, isMobile]);
   const [cameraError, setCameraError] = useState<string | null>(null);
   /**
    * Whether a hardware scanner has been seen typing.
@@ -175,7 +208,7 @@ export default function ScanPage() {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const lastSeen = useRef<Map<string, number>>(new Map());
+  const accepted = useRef<Set<string>>(new Set());
 
   /**
    * The cart, readable from inside `submitCode` without re-creating it.
@@ -221,31 +254,32 @@ export default function ScanPage() {
       const code = raw.trim();
       if (!code) return;
 
-      // Frames of the same barcode arriving before the cart has caught up.
-      const now = Date.now();
-      const seen = lastSeen.current.get(code);
-      if (seen !== undefined && now - seen < DUPLICATE_WINDOW_MS) return;
-      lastSeen.current.set(code, now);
-
-      // ALREADY IN THE CART — acknowledge it, change nothing.
+      // ALREADY SCANNED — acknowledge it, change nothing.
       //
-      // Matched on the scanned code AND on the resolved barcode, so the same
-      // product read from a 13-digit shelf edge and a 14-digit outer is still
-      // recognised as the line it already is.
+      // The local set is checked FIRST and is authoritative for this session:
+      // it is written synchronously, so a camera decoding the same barcode
+      // seven times a second cannot slip past it while the cart is loading.
+      // The cart is checked too, for lines that were already there when the
+      // page opened.
+      const key = barcodeKey(code);
       const existing = (cartRef.current?.lines ?? []).find(
         (candidate) =>
           sameBarcode(candidate.scannedCode, code) || sameBarcode(candidate.gtin14, code),
       );
 
-      if (existing) {
-        setHighlight(existing.id);
+      if (accepted.current.has(key) || existing) {
+        if (existing) setHighlight(existing.id);
         setFeedback({
           kind: "miss",
-          text: `${code} — already in the list (qty ${existing.quantity}). Use ＋ to add more.`,
+          text: existing
+            ? `${code} — already in the list (qty ${existing.quantity}). Use ＋ to add more.`
+            : `${code} — already scanned. Use ＋ to add more.`,
           at: Date.now(),
         });
         return;
       }
+
+      accepted.current.add(key);
 
       // On screen NOW, before the request goes out.
       setPending((current) =>
@@ -315,6 +349,8 @@ export default function ScanPage() {
             });
         }
       } catch (error) {
+        // It never landed, so it is not in the list — let it be scanned again.
+        accepted.current.delete(key);
         setFeedback({
           kind: "error",
           text: error instanceof ApiError ? error.message : "That scan did not register",
@@ -482,6 +518,14 @@ export default function ScanPage() {
    */
   const changeQuantity = useCallback((line: ScanLine, next: number) => {
     const quantity = Math.max(0, Math.floor(next));
+
+    // Deleting a line makes re-scanning it a deliberate act again, so the
+    // barcode stops being refused. Without this a product removed by mistake
+    // could never be put back by scanning.
+    if (quantity <= 0) {
+      accepted.current.delete(barcodeKey(line.scannedCode));
+      if (line.gtin14) accepted.current.delete(barcodeKey(line.gtin14));
+    }
 
     // The value to roll back to, captured before the optimistic write.
     const previous = cartRef.current?.lines.find((entry) => entry.id === line.id) ?? line;
@@ -757,7 +801,11 @@ export default function ScanPage() {
                 onClick={() => {
                   setClearing(true);
                   void clearScanCart()
-                    .then((result) => setCart(result.cart))
+                    .then((result) => {
+                      // Nothing is in the list any more, so nothing is a repeat.
+                      accepted.current.clear();
+                      setCart(result.cart);
+                    })
                     .catch((error) =>
                       setFeedback({
                         kind: "error",
