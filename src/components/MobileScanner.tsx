@@ -46,7 +46,7 @@ const DECODE_INTERVAL_MS = 140;
 
 const FORMATS = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "itf"] as const;
 
-type Sheet = "closed" | "peek" | "full";
+type Sheet = "closed" | "peek";
 
 // ---------------------------------------------------------------------------
 // Icons — inline, so the overlay costs no request.
@@ -127,6 +127,25 @@ export default function MobileScanner({
   const streamRef = useRef<MediaStream | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
+  /**
+   * `onScan`, held where the camera effect can reach it without depending on it.
+   *
+   * THIS IS WHY THE PREVIEW USED TO BLINK. The effect below listed `onScan` in
+   * its dependencies, and the page passes an inline arrow — a new function on
+   * every render. Every scan sets several pieces of state, each render made a
+   * new `onScan`, and the effect tore the MediaStream down and opened it again.
+   * The camera was restarting several times per beep, which is exactly what a
+   * black flash for a second looks like.
+   *
+   * A ref rather than asking the caller to memoise: a component that stops
+   * working because somebody forgot a `useCallback` is a trap, and this one is
+   * holding a hardware device.
+   */
+  const onScanRef = useRef(onScan);
+  useEffect(() => {
+    onScanRef.current = onScan;
+  }, [onScan]);
+
   const lines = cart?.lines ?? [];
   const priced = lines.filter((line) => line.best).length;
 
@@ -176,7 +195,7 @@ export default function MobileScanner({
             try {
               const found = await detector.detect(videoRef.current);
               for (const result of found) {
-                if (result?.rawValue) onScan(String(result.rawValue));
+                if (result?.rawValue) onScanRef.current(String(result.rawValue));
               }
             } catch {
               // A single failed frame is normal — motion blur, bad light. The
@@ -201,7 +220,8 @@ export default function MobileScanner({
       setTorchOn(false);
       setTorchAvailable(false);
     };
-  }, [open, onScan]);
+    // ONLY `open`. See `onScanRef` — anything else here restarts the camera.
+  }, [open]);
 
   // Reset when it closes, so re-opening does not resume mid-sheet.
   useEffect(() => {
@@ -257,7 +277,7 @@ export default function MobileScanner({
 
         setError(null);
         for (const result of found) {
-          if (result?.rawValue) onScan(String(result.rawValue));
+          if (result?.rawValue) onScanRef.current(String(result.rawValue));
         }
         // Straight to the list: a photo of ten barcodes is ten decisions, and
         // they are made in the sheet rather than over the viewfinder.
@@ -268,12 +288,10 @@ export default function MobileScanner({
         setGalleryBusy(false);
       }
     },
-    [onScan],
+    [],
   );
 
   if (!open) return null;
-
-  const sheetHeight = sheet === "full" ? "100%" : "86%";
 
   return (
     <div className="fixed inset-0 z-[60] bg-black lg:hidden">
@@ -404,10 +422,13 @@ export default function MobileScanner({
           <motion.div
             key="sheet"
             initial={{ y: "100%" }}
-            animate={{ y: 0, height: sheetHeight }}
+            animate={{ y: 0 }}
             exit={{ y: "100%" }}
             transition={{ type: "tween", ease: [0.22, 1, 0.36, 1], duration: 0.3 }}
-            className="absolute inset-x-0 bottom-0 z-20 flex flex-col rounded-t-2xl border-t border-line bg-surface"
+            // 86%: a band of camera stays visible above it, so the sheet reads
+            // as covering the scanner rather than replacing it — and somebody
+            // checking a quantity can see they are still scanning.
+            className="absolute inset-x-0 bottom-0 z-20 flex h-[86%] flex-col rounded-t-2xl border-t border-line bg-surface"
           >
             <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3">
               <div className="min-w-0">
@@ -453,10 +474,21 @@ export default function MobileScanner({
                 type="button"
                 disabled={pricing || lines.length === 0}
                 onClick={() => {
-                  // Full screen FIRST: reading prices is a different job from
-                  // scanning, and the band of camera above stops being useful
-                  // the moment somebody is comparing numbers.
-                  setSheet("full");
+                  /**
+                   * LEAVE THE SCANNER, then fetch.
+                   *
+                   * Reading and comparing prices is a different job from
+                   * scanning: it wants the whole screen, the supplier columns
+                   * and the Add-to-basket controls the scan page already has.
+                   * Growing this sheet to full height would be a second, worse
+                   * copy of that page rendered over a camera nobody is aiming
+                   * any more — and the camera would go on holding the torch and
+                   * the video track while somebody read prices.
+                   *
+                   * Closing first also stops the stream immediately. The fetch
+                   * continues on the page, which shows its own progress.
+                   */
+                  onClose();
                   void onFetchPrices();
                 }}
                 className="w-full rounded-full bg-teal-600 py-3 text-[14px] font-medium text-white disabled:opacity-40"

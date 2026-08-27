@@ -121,6 +121,29 @@ export default function ScanPage() {
    * component has to know which one it is.
    */
   const isMobile = useIsMobile();
+
+  /**
+   * `/scan?camera=1` — arriving from the tab bar's Scan button.
+   *
+   * Tapping a scan icon means "I want to scan", so the viewfinder opens on
+   * arrival rather than behind another button.
+   *
+   * READ FROM `window.location` RATHER THAN `useSearchParams`. That hook makes
+   * the route opt out of static rendering unless it is wrapped in a Suspense
+   * boundary, which is a lot of ceremony for one flag read once on mount.
+   *
+   * The flag is STRIPPED as it is consumed, so coming back to /scan — from the
+   * tab bar, or the back button — lands on the list rather than reopening the
+   * camera on somebody who was reading it.
+   */
+  useEffect(() => {
+    if (!isMobile) return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("camera") !== "1") return;
+
+    setCameraOn(true);
+    window.history.replaceState(null, "", "/scan");
+  }, [isMobile]);
   const [cameraError, setCameraError] = useState<string | null>(null);
   /**
    * Whether a hardware scanner has been seen typing.

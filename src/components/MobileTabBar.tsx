@@ -81,15 +81,26 @@ interface Tab {
 const TABS: Tab[] = [
   { href: "/dashboard", label: "Dashboard", icon: "home" },
   { href: "/orders", label: "Order list", icon: "list" },
-  { href: "/scan", label: "Scan", icon: "scan" },
+  /**
+   * `?camera=1` opens the viewfinder on arrival.
+   *
+   * Tapping a scan icon means "I want to scan", not "show me a page with a
+   * button that starts scanning". The page consumes the flag and strips it, so
+   * coming BACK to /scan — from the tab bar's own highlight, or the back
+   * button — lands on the list rather than reopening the camera.
+   */
+  { href: "/scan?camera=1", label: "Scan", icon: "scan" },
   { href: "/product-search", label: "Product search", icon: "search" },
   { href: "/settings", label: "Account", icon: "user" },
 ];
 
 function isActive(pathname: string, href: string): boolean {
-  // Prefix match, so /jobs/<id> keeps Dashboard's sibling lit and /settings
-  // stays lit on any sub-page it grows later.
-  return pathname === href || pathname.startsWith(`${href}/`);
+  // Compared on the PATH only — `/scan?camera=1` and `/scan` are the same tab,
+  // and the query string is an instruction rather than a destination.
+  const path = href.split("?")[0] ?? href;
+  // Prefix match, so /jobs/<id> keeps its sibling lit and /settings stays lit
+  // on any sub-page it grows later.
+  return pathname === path || pathname.startsWith(`${path}/`);
 }
 
 export default function MobileTabBar() {
