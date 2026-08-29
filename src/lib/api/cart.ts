@@ -152,6 +152,43 @@ async function readOrThrow<T>(res: Response, what: string): Promise<T> {
   return (text ? JSON.parse(text) : undefined) as T;
 }
 
+/**
+ * A line this buyer has already sent to a supplier basket.
+ *
+ * A RECORD OF AN ACTION, not a mirror of the basket. We know we sent it and the
+ * supplier accepted it; we do not know whether somebody has since deleted the
+ * line on the supplier's own site. Screens say "added", in the past tense.
+ */
+export interface BasketAdd {
+  supplierId: string;
+  sku: string;
+  /** What the supplier reported holding after the add, when it said. */
+  quantity?: number;
+  addedAt: string;
+  firstAddedAt: string;
+}
+
+/**
+ * POST /api/cart/adds — which of these lines are already on an order.
+ *
+ * ASKED OF OUR OWN DATABASE. The obvious implementation is to read each
+ * supplier's basket, but that is a live request to a logged-in trade account
+ * per supplier, and this is called by a search screen whose whole design is
+ * that searching contacts nobody.
+ */
+export async function fetchBasketAdds(
+  items: { supplierId: string; sku: string }[],
+): Promise<BasketAdd[]> {
+  if (items.length === 0) return [];
+
+  const res = await request("/api/cart/adds", { method: "POST", body: { items } });
+  const body = await readOrThrow<{ adds: BasketAdd[] }>(
+    res,
+    "Could not check what is already in your baskets",
+  );
+  return body.adds ?? [];
+}
+
 /** The basket exactly as the supplier holds it right now. */
 export async function getBasket(
   supplier: CartSupplier = "musgrave",

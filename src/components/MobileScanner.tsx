@@ -521,7 +521,7 @@ function SheetRow({
         <div className="min-w-0 flex-1">
           <p className="text-[13.5px] text-ink">
             {line.product?.name ?? (
-              <span className="text-ink-soft">Unrecognised barcode</span>
+              <span className="text-ink-soft">Not found</span>
             )}
           </p>
           <p className="mt-0.5 text-[11.5px] text-ink-faint">

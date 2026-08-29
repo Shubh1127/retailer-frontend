@@ -21,6 +21,7 @@
  */
 
 import { eur, type ReadyToOrderRow } from "@/lib/api/jobs";
+import StockLine from "@/components/StockLine";
 import {
   displaySupplierId,
   sameDisplaySupplier,
@@ -74,23 +75,28 @@ export function supplierColumns(rows: readonly ReadyToOrderRow[]): SupplierColum
  * cheaper wins the cell — the column is a claim about what Barry charges, and
  * showing the dearer of two real prices would understate them.
  */
-function priceOf(row: ReadyToOrderRow, supplierId: string): number | undefined {
-  const prices = row.detail.offers
-    .filter((entry) => sameDisplaySupplier(entry.supplier, supplierId))
-    .map((entry) => entry.exVatCasePrice)
-    .filter((price): price is number => typeof price === "number");
-
-  return prices.length > 0 ? Math.min(...prices) : undefined;
+function cheapestOffer(row: ReadyToOrderRow, supplierId: string) {
+  return row.detail.offers
+    .filter(
+      (entry) =>
+        sameDisplaySupplier(entry.supplier, supplierId) &&
+        typeof entry.exVatCasePrice === "number",
+    )
+    .sort((a, b) => a.exVatCasePrice! - b.exVatCasePrice!)[0];
 }
 
 export function SupplierPriceCell({
   row,
   supplierId,
+  supplierName,
 }: {
   row: ReadyToOrderRow;
   supplierId: string;
+  /** For the tooltip, so "who says so" is one hover away. */
+  supplierName?: string;
 }) {
-  const price = priceOf(row, supplierId);
+  const offer = cheapestOffer(row, supplierId);
+  const price = offer?.exVatCasePrice;
   // Compared by display id: the row is ordered from barrygroup-chill, the
   // column is "barrygroup", and the highlight has to land on it.
   const isChosen = sameDisplaySupplier(row.bestSupplier, supplierId);
@@ -125,6 +131,15 @@ export function SupplierPriceCell({
           +{eur(delta)}
         </span>
       )}
+      {/* UNDER THE PRICE. A cheaper cell that is not the winner is usually a
+          margin decision; when this says "out of stock" it is the reason, and
+          without it the column reads as the matcher ignoring a saving. */}
+      <StockLine
+        inStock={offer?.inStock}
+        {...(offer?.availabilityText ? { availabilityText: offer.availabilityText } : {})}
+        supplierName={supplierName}
+        className="font-normal"
+      />
     </td>
   );
 }

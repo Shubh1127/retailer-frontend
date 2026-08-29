@@ -14,14 +14,25 @@ import { reportSession } from "@/lib/api/session";
 import { supabase } from "@/lib/supabase";
 import ThemeToggle from "@/components/ThemeToggle";
 import MobileTabBar from "@/components/MobileTabBar";
+import NavIcon, { type NavIconName } from "@/components/NavIcons";
 
-const tabs = [
-  { href: "/dashboard", label: "Dashboard", enabled: true },
-  { href: "/jobs", label: "Jobs", enabled: true },
-  { href: "/scan", label: "Scan", enabled: true },
-  { href: "/product-search", label: "Product search", enabled: true },
-  { href: "/orders", label: "Order list", enabled: true },
-  { href: "/baskets", label: "Baskets", enabled: true },
+/**
+ * `icon` names the SAME glyph the mobile tab bar draws for the destination.
+ * The bar is icon-only, so its pictures are its labels; a header showing a
+ * different one for the same route would teach two things for one place.
+ */
+const tabs: {
+  href: string;
+  label: string;
+  enabled: boolean;
+  icon: NavIconName;
+}[] = [
+  { href: "/dashboard", label: "Dashboard", enabled: true, icon: "home" },
+  { href: "/jobs", label: "Jobs", enabled: true, icon: "jobs" },
+  { href: "/scan", label: "Scan", enabled: true, icon: "scan" },
+  { href: "/product-search", label: "Product search", enabled: true, icon: "search" },
+  { href: "/orders", label: "Order list", enabled: true, icon: "list" },
+  { href: "/baskets", label: "Baskets", enabled: true, icon: "basket" },
   // Compare, Reconcile and Mappings used to sit here greyed out with a
   // "Coming soon" tooltip. Six months of that teaches people to read past the
   // nav rather than along it, and they cost width the real destinations wanted.
@@ -432,17 +443,19 @@ export default function AppShell({
                 <Link
                   key={t.href}
                   href={t.href}
-                  className={`whitespace-nowrap rounded-md px-2.5 py-1.5 text-[13px] font-medium transition-colors ${
+                  className={`flex items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-[13px] font-medium transition-colors ${
                     active === t.label
                       ? "bg-teal-50 text-link"
                       : "text-ink-soft hover:bg-canvas hover:text-ink"
                   }`}
                 >
+                  <NavIcon name={t.icon} active={active === t.label} />
                   {t.label}
                 </Link>
               ) : (
                 <div key={t.href} className="group relative">
-                  <span className="cursor-not-allowed whitespace-nowrap rounded-md px-2.5 py-1.5 text-[13px] font-medium text-ink-faint">
+                  <span className="flex cursor-not-allowed items-center gap-1.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-[13px] font-medium text-ink-faint">
+                    <NavIcon name={t.icon} />
                     {t.label}
                   </span>
 

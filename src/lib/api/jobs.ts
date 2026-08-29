@@ -47,6 +47,16 @@ export interface DashboardOffer {
   uom?: string;
   /** Absolute thumbnail URL, when the supplier publishes one. */
   imageUrl?: string;
+  /**
+   * Whether the supplier said they can supply it — absent when they did not say.
+   *
+   * An explicit `false` makes the offer ineligible to win the line; `undefined`
+   * does not, because Barry and O'Reilly publish no stock field at all. See
+   * `StockLine` for the three renderings.
+   */
+  inStock?: boolean;
+  /** The supplier's own wording — "back order", "discontinued". */
+  availabilityText?: string;
 }
 
 export interface CommercialAlternative extends DashboardOffer {

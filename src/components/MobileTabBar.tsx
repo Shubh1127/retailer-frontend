@@ -30,52 +30,14 @@
  */
 
 import Link from "next/link";
+import NavIcon, { type NavIconName } from "@/components/NavIcons";
 import { usePathname } from "next/navigation";
-
-/** 24px line icons, inline so the bar costs no request and no dependency. */
-const ICONS = {
-  home: (
-    <>
-      <path d="M3 10.5 12 3l9 7.5" />
-      <path d="M5 9.5V20a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1V9.5" />
-    </>
-  ),
-  list: (
-    <>
-      <path d="M8 6h12M8 12h12M8 18h12" />
-      <path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01" />
-    </>
-  ),
-  /** A scan frame with a beam — read as "scan", where a QR block reads as "code". */
-  scan: (
-    <>
-      <path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8" />
-      <path d="M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8" />
-      <path d="M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16" />
-      <path d="M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16" />
-      <path d="M4 12h16" />
-    </>
-  ),
-  search: (
-    <>
-      <circle cx="11" cy="11" r="6.5" />
-      <path d="m16 16 4.5 4.5" />
-    </>
-  ),
-  user: (
-    <>
-      <circle cx="12" cy="12" r="9" />
-      <circle cx="12" cy="10" r="3" />
-      <path d="M6.5 18.5a6 6 0 0 1 11 0" />
-    </>
-  ),
-} as const;
 
 interface Tab {
   href: string;
   /** Read aloud, and used as the title. The eye gets the icon. */
   label: string;
-  icon: keyof typeof ICONS;
+  icon: NavIconName;
 }
 
 const TABS: Tab[] = [
@@ -134,19 +96,7 @@ export default function MobileTabBar() {
                   active ? "text-link" : "text-ink-faint hover:text-ink-soft"
                 }`}
               >
-                <svg
-                  width="23"
-                  height="23"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth={active ? 2.1 : 1.7}
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-hidden="true"
-                >
-                  {ICONS[tab.icon]}
-                </svg>
+                <NavIcon name={tab.icon} size={23} active={active} />
               </Link>
             </li>
           );

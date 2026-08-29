@@ -42,7 +42,9 @@ import { sameDisplaySupplier, supplierLabel } from "@/lib/api/cart";
 import { TableSkeleton } from "@/components/TableSkeleton";
 import Pagination, { usePagination } from "@/components/Pagination";
 import QuickProductSearch from "@/components/QuickProductSearch";
+import StartOptions from "@/components/StartOptions";
 import ProductImage from "@/components/ProductImage";
+import StockLine from "@/components/StockLine";
 import {
   createJob,
   downloadReport,
@@ -258,6 +260,13 @@ function AlternativeCard({
           <div className="text-[13px] font-semibold text-ink">
             {eur(alternative.exVatCasePrice)}
           </div>
+          <StockLine
+            inStock={alternative.inStock}
+            {...(alternative.availabilityText
+              ? { availabilityText: alternative.availabilityText }
+              : {})}
+            supplierName={supplierLabel(alternative.supplier)}
+          />
           {delta !== undefined && (
             <div
               className={`text-[11px] ${delta < 0 ? "text-emerald-600" : "text-ink-soft"}`}
@@ -366,6 +375,17 @@ function ProductDetailModal({
                   {eur(row.price)}
                 </div>
                 <div className="text-[11px] text-ink-soft">per case, ex-VAT</div>
+                {/* The selected supplier can only be one that did not say it is
+                    out — `chooseBestSupplier` excludes an explicit `false`. So
+                    this is either "in stock" or nothing at all. */}
+                <StockLine
+                  inStock={selected?.inStock}
+                  {...(selected?.availabilityText
+                    ? { availabilityText: selected.availabilityText }
+                    : {})}
+                  supplierName={row.bestSupplierName}
+                  className="mt-0.5"
+                />
               </div>
             </div>
           </div>
@@ -512,8 +532,15 @@ function ProductDetailModal({
                           {packOf(offer)} · {supplierLabel(offer.supplier)}
                         </div>
                       </div>
-                      <div className="shrink-0 text-[13px] font-medium text-ink">
+                      <div className="shrink-0 text-right text-[13px] font-medium text-ink">
                         {eur(offer.exVatCasePrice)}
+                        <StockLine
+                          inStock={offer.inStock}
+                          {...(offer.availabilityText
+                            ? { availabilityText: offer.availabilityText }
+                            : {})}
+                          supplierName={supplierLabel(offer.supplier)}
+                        />
                       </div>
                     </div>
                   ))}
@@ -746,30 +773,16 @@ export default function DashboardPage() {
       <QuickProductSearch />
 
       {!job ? (
-        // NO LONGER A DROPZONE.
+        // THREE WAYS IN, NOT ONE — and still not a dropzone.
         //
-        // Dropping a file here used to start a job immediately — a second way
-        // in, beside the button, both of which fanned two hundred lines out to
-        // four live trade accounts before anyone had reviewed the file. There is
-        // one way to start an order now, and it goes through the Order List.
-        <div className="rounded-xl border border-dashed border-line bg-surface px-6 py-16 text-center">
-          <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-canvas text-ink-soft">
-            <UploadIcon />
-          </div>
-          <h2 className="mt-3 text-[15px] font-semibold text-ink">
-            Start with an order list
-          </h2>
-          <p className="mx-auto mt-1 max-w-md text-[13px] text-ink-soft">
-            Import your CSV into a list, check the quantities, then send it for
-            comparison. Nothing is shown to a supplier until you do.
-          </p>
-          <Link
-            href="/orders"
-            className="mt-4 inline-flex items-center gap-2 rounded-md bg-teal-600 px-3.5 py-2 text-[13px] font-medium text-white hover:bg-teal-700"
-          >
-            Build an order list
-          </Link>
-        </div>
+        // Dropping a file here used to start a job immediately, a second way in
+        // beside the button, both of which fanned two hundred lines out to four
+        // live trade accounts before anyone had reviewed the file. That is still
+        // gone: the sheet route goes through the Order List, where it is
+        // reviewed. What is new is that the other two ways a retailer actually
+        // starts — a barcode under a camera, and a barcode typed in — are now
+        // offered here instead of being reachable only from the header.
+        <StartOptions />
       ) : (
         <>
           {/* ---- Progress ---- */}

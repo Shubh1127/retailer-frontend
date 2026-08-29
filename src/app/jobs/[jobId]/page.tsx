@@ -714,6 +714,7 @@ export default function JobDetailsPage({
                             key={column.id}
                             row={row}
                             supplierId={column.id}
+                            supplierName={column.name}
                           />
                         ))}
                         <td className="px-3 py-2 text-right tabular-nums">

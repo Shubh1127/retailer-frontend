@@ -22,7 +22,18 @@ export interface MasterSupplierSku {
   unitSize?: number;
   uom?: string;
   isSingle: boolean;
-  inStock: boolean;
+  /**
+   * Whether the supplier said they can supply it — absent when they did not say.
+   *
+   * OPTIONAL, and it was not before. The catalogue always had a value because
+   * the sync wrote one; a LIVE answer replaces it, and a live answer from Barry
+   * or O'Reilly is "no information" — neither publishes a stock field. A
+   * required boolean here would have forced that into `false`, which reads as
+   * a refusal they never made.
+   */
+  inStock?: boolean;
+  /** The supplier's own wording — "back order", "discontinued". */
+  availabilityText?: string;
   imageUrl?: string;
   productUrl?: string;
 }
@@ -63,6 +74,11 @@ export interface ScanLine {
    * is outside all four.
    */
   liveOnly?: boolean;
+  /** The buyer already sent this line to a real supplier basket. */
+  addedToBasket?: boolean;
+  addedSupplierId?: string;
+  /** When the prices on this line were fetched. Absent means never. */
+  pricedAt?: string;
 }
 
 export interface ScanCart {
@@ -148,6 +164,24 @@ export function discoverScanLine(lineId: number): Promise<{
   reason?: string;
 }> {
   return apiFetch(`/api/scan/cart/lines/${lineId}/discover`, { method: "POST" });
+}
+
+/**
+ * Record that a line went into a real supplier basket.
+ *
+ * The basket write itself goes through /api/cart, which owns every supplier
+ * mutation. This only stores the DECISION — which is what stops the background
+ * refresh re-pricing a line whose money is already agreed.
+ */
+export function markScanLineAdded(
+  lineId: number,
+  supplierId: string,
+  sku: string,
+): Promise<{ ok: true }> {
+  return apiFetch(`/api/scan/cart/lines/${lineId}/added`, {
+    method: "POST",
+    body: { supplierId, sku },
+  });
 }
 
 /**

@@ -45,6 +45,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import StockLine from "@/components/StockLine";
 import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
@@ -311,7 +312,7 @@ export default function ScanPage() {
                     ? // Not a verdict yet — the background lookup below is
                       // about to ask the suppliers directly.
                       `${code} — not in our catalogues, checking suppliers…`
-                    : `${code} — not a barcode we recognise`,
+                    : `${code} — not a valid barcode`,
                 at: Date.now(),
               },
         );
@@ -335,7 +336,7 @@ export default function ScanPage() {
                 kind: result.discovered ? "ok" : "miss",
                 text: result.discovered
                   ? `${code} · found at ${result.name ?? result.supplierId}`
-                  : `${code} — no supplier we carry stocks this`,
+                  : `${code} — not found at any supplier`,
                 at: Date.now(),
               });
               if (result.discovered) void load();
@@ -950,7 +951,7 @@ function ScanRow({
                 // have yet.
                 <span className="text-ink-soft">Checking suppliers…</span>
               ) : (
-                <span className="text-ink-soft">Unrecognised barcode</span>
+                <span className="text-ink-soft">Not found</span>
               ))}
           </span>
 
@@ -1020,6 +1021,15 @@ function ScanRow({
                     ) : (
                       <span className="text-ink-faint">—</span>
                     )}
+                    {/* UNDER THE PRICE. A cheaper supplier that did not win is
+                        confusing without it — this is the reason. */}
+                    <StockLine
+                      inStock={offer.inStock}
+                      {...(offer.availabilityText
+                        ? { availabilityText: offer.availabilityText }
+                        : {})}
+                      supplierName={cartSupplierLabel(offer.supplierId)}
+                    />
                   </span>
 
                   <span className="nums text-ink-faint">{offer.supplierSku}</span>

@@ -34,6 +34,17 @@ export default function SignInForm({
 }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  /**
+   * Revealed only while the person asks for it, and never remembered.
+   *
+   * A typo in a password nobody can see is indistinguishable from a wrong
+   * password, and the field is where a phone's autocorrect and a shared
+   * keyboard layout do their worst. This is the standard fix.
+   *
+   * Local to the component and reset on every mount: it must not survive a
+   * sign-out, and nothing about it belongs in storage.
+   */
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
 
@@ -105,15 +116,59 @@ export default function SignInForm({
           >
             Password
           </label>
-          <input
-            id="signin-password"
-            type="password"
-            required
-            autoComplete="current-password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            className="mt-1 w-full rounded-md border border-line bg-surface px-3 py-2 text-[13.5px] text-ink focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
-          />
+          <div className="relative mt-1">
+            {/* `pr-10` keeps the typed characters clear of the button.
+                Revealed, a long password runs straight underneath it. */}
+            <input
+              id="signin-password"
+              type={showPassword ? "text" : "password"}
+              required
+              autoComplete="current-password"
+              value={password}
+              onChange={(event) => setPassword(event.target.value)}
+              className="w-full rounded-md border border-line bg-surface px-3 py-2 pr-10 text-[13.5px] text-ink focus:border-teal-500 focus:outline-none focus:ring-1 focus:ring-teal-500"
+            />
+
+            {/* THE ICON IS A BUTTON, AND IT SAYS WHAT IT DOES.
+
+                `aria-pressed` plus a label that changes with the state, so a screen
+                reader gets "show password" / "hide password" rather than a nameless
+                control.
+
+                `type="button"` — inside a form, a button with no type is a SUBMIT
+                button, so revealing the password would post the form.
+
+                `tabIndex={-1}` keeps it out of the tab order: Tab from the password
+                field should reach Sign in, not a decoration on the way. */}
+            <button
+              type="button"
+              tabIndex={-1}
+              onClick={() => setShowPassword((shown) => !shown)}
+              aria-pressed={showPassword}
+              aria-label={showPassword ? "Hide password" : "Show password"}
+              title={showPassword ? "Hide password" : "Show password"}
+              className="absolute right-1 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-md text-ink-faint transition-colors hover:text-ink-soft"
+            >
+              <svg
+                width="17"
+                height="17"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth={1.7}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12Z" />
+                <circle cx="12" cy="12" r="3" />
+                {/* A struck-through eye means "hidden". The eye stays put and gains a
+                    line rather than swapping to a different glyph — a control should
+                    not change shape the moment somebody uses it. */}
+                {showPassword && <path d="m4 20 16-16" />}
+              </svg>
+            </button>
+          </div>
         </div>
 
         {error && (
