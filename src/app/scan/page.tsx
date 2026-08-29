@@ -62,6 +62,7 @@ import {
   sameBarcode,
   type Keystroke,
 } from "@/lib/scannerInput";
+import { createCameraScanStream } from "@/lib/cameraScanStream";
 import {
   clearScanCart,
   discoverScanLine,
@@ -210,6 +211,21 @@ export default function ScanPage() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const accepted = useRef<Set<string>>(new Set());
+
+  /**
+   * Frame-level de-duplication for the CAMERA, kept apart from `accepted`.
+   *
+   * `accepted` answers "has this been scanned this session" — a question about
+   * the cart, which is why it is cleared when a line is deleted and per barcode
+   * when a request fails. A video stream needs a different question answered:
+   * "is this the same label I am still looking at". Sixteen barcodes on a sheet
+   * held in front of the lens are sixteen detections SEVEN TIMES A SECOND, and
+   * routing those through a cart-shaped guard produced sixty-one lines.
+   *
+   * A ref, so the decode loop is not rebuilt when it changes — restarting the
+   * camera on every scan is the bug this page has already had once.
+   */
+  const scanStream = useRef(createCameraScanStream());
 
   /**
    * The cart, readable from inside `submitCode` without re-creating it.
@@ -410,14 +426,31 @@ export default function ScanPage() {
         timer = setInterval(() => {
           void (async () => {
             if (!videoRef.current || videoRef.current.readyState < 2) return;
+
+            let raw: string[] = [];
             try {
               const found = await detector.detect(videoRef.current);
-              for (const result of found) {
-                if (result?.rawValue) void submitCode(String(result.rawValue));
-              }
+              raw = found
+                .map((result: { rawValue?: unknown }) => String(result?.rawValue ?? ""))
+                .filter((value: string) => value !== "");
             } catch {
               // A single failed frame is normal — motion blur, bad light. The
               // next tick tries again; reporting it would be constant noise.
+            }
+
+            /**
+             * EVERY FRAME GOES THROUGH THE STREAM, including empty ones.
+             *
+             * That is how a barcode leaving the view is noticed. Feeding it
+             * only when something decoded would keep every label "visible" for
+             * ever, and the first real absence would never be counted.
+             *
+             * A failed decode is fed as an empty frame rather than skipped, for
+             * the same reason: from the stream's point of view a frame that
+             * threw and a frame that saw nothing are the same fact.
+             */
+            for (const code of scanStream.current.frame(raw)) {
+              void submitCode(code);
             }
           })();
         }, DECODE_INTERVAL_MS);
@@ -436,6 +469,10 @@ export default function ScanPage() {
       if (timer) clearInterval(timer);
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
+      // Closing the camera ends the continuity the stream is tracking. Without
+      // this, reopening it on a product still in view would suppress the first
+      // scan and look like the camera had stopped working.
+      scanStream.current.reset();
     };
   }, [cameraOn, isMobile, submitCode]);
 

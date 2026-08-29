@@ -35,6 +35,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { canonicalBarcode, createCameraScanStream } from "@/lib/cameraScanStream";
 import { AnimatePresence, motion } from "framer-motion";
 
 import ScanThumb from "@/components/ScanThumb";
@@ -142,6 +143,17 @@ export default function MobileScanner({
    * working because somebody forgot a `useCallback` is a trap, and this one is
    * holding a hardware device.
    */
+  /**
+   * Frame-level de-duplication, so a barcode held in front of the lens is one
+   * scan rather than seven a second.
+   *
+   * The page behind this has its own duplicate guard, and it is not this: that
+   * one is about the CART — cleared when a line is deleted, cleared per barcode
+   * when a request fails — and a video stream needs "am I still looking at the
+   * same label", which no server answer may affect.
+   */
+  const scanStream = useRef(createCameraScanStream());
+
   const onScanRef = useRef(onScan);
   useEffect(() => {
     onScanRef.current = onScan;
@@ -193,14 +205,27 @@ export default function MobileScanner({
         timer = setInterval(() => {
           void (async () => {
             if (!videoRef.current || videoRef.current.readyState < 2) return;
+
+            let raw: string[] = [];
             try {
               const found = await detector.detect(videoRef.current);
-              for (const result of found) {
-                if (result?.rawValue) onScanRef.current(String(result.rawValue));
-              }
+              raw = found
+                .map((result: { rawValue?: unknown }) => String(result?.rawValue ?? ""))
+                .filter((value: string) => value !== "");
             } catch {
               // A single failed frame is normal — motion blur, bad light. The
               // next tick tries again; reporting it would be constant noise.
+            }
+
+            /**
+             * EVERY FRAME GOES THROUGH THE STREAM, including empty ones and
+             * ones that threw — that is how a barcode LEAVING the view is
+             * noticed. Feeding it only when something decoded would keep every
+             * label "visible" for ever, so the sheet in front of the lens would
+             * be scanned once and then never again.
+             */
+            for (const code of scanStream.current.frame(raw)) {
+              onScanRef.current(code);
             }
           })();
         }, DECODE_INTERVAL_MS);
@@ -215,6 +240,9 @@ export default function MobileScanner({
 
     return () => {
       cancelled = true;
+      // Closing the viewfinder ends the continuity being tracked. Without this,
+      // reopening it on the same product would suppress the first scan.
+      scanStream.current.reset();
       if (timer) clearInterval(timer);
       streamRef.current?.getTracks().forEach((track) => track.stop());
       streamRef.current = null;
@@ -276,10 +304,29 @@ export default function MobileScanner({
           return;
         }
 
-        setError(null);
+        /**
+         * ONE PASS, so this does NOT go through the frame stream.
+         *
+         * A photo is a single deliberate act, not a continuous view: picking
+         * the same image twice is a person choosing to, and suppressing the
+         * second would be wrong. What it does share is the canonical form —
+         * deduplicated within the image, and junk decodes dropped. A docket
+         * photographed at an angle produces ITF and Code 128 fragments that are
+         * not barcodes at all, and each was becoming a cart line.
+         */
+        const unique = new Set<string>();
         for (const result of found) {
-          if (result?.rawValue) onScanRef.current(String(result.rawValue));
+          const code = canonicalBarcode(String(result?.rawValue ?? ""));
+          if (code) unique.add(code);
         }
+
+        if (unique.size === 0) {
+          setError("No readable barcode in that image.");
+          return;
+        }
+
+        setError(null);
+        for (const code of unique) onScanRef.current(code);
         // Straight to the list: a photo of ten barcodes is ten decisions, and
         // they are made in the sheet rather than over the viewfinder.
         setSheet("peek");
