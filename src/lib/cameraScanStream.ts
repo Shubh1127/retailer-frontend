@@ -25,17 +25,26 @@
  *
  * HOW IT DECIDES
  *
- * A barcode is emitted the frame it APPEARS, and then suppressed for as long as
- * it stays in view — however many seconds that is. Not a timeout: a sheet left
- * on the counter for a minute is still one scan of each label, and a timeout
- * would silently start counting again.
+ * A barcode is emitted the frame it APPEARS, and then never again for the rest
+ * of the camera session. Not for as long as it stays in view — FOR THE SESSION.
  *
- * It stops being "in view" only after several CONSECUTIVE frames without it,
- * because detection flickers constantly — motion blur, a hand crossing the
- * lens, a bad angle for one tick. One missed frame means nothing. After that it
- * is genuinely gone, and seeing it again is a new physical scan: the buyer
- * moved the pack away and brought it back, which is how somebody deliberately
- * scans a second case.
+ * The difference is the whole second half of this bug. Suppressing only while
+ * visible was the obvious rule and it failed on the obvious action: panning the
+ * phone across a shelf strip. Every label leaves the frame and comes back as
+ * the camera moves, and each return counted as a new physical scan — sixteen
+ * labels produced seventy-seven. "Left the view" turned out to be a poor proxy
+ * for "the buyer scanned it again", because a camera in a moving hand loses
+ * sight of everything constantly.
+ *
+ * WHAT REPLACES IT. Adding a second case is a deliberate act with a control of
+ * its own: the list already answers a repeat with "already in the list (qty 2).
+ * Use ＋ to add more." A cart is a list of products with quantities, not a tally
+ * of beeps, and the quantity is where that intent belongs.
+ *
+ * The in-view tracking is still here and still does the frame-storm job —
+ * `BarcodeDetector` reports everything it can see seven times a second — and it
+ * is what `rescanOnReturn` uses for callers that genuinely want a return to
+ * count. Nothing on the shop floor does.
  *
  * WHAT IT REFUSES
  *
@@ -48,7 +57,12 @@
  * scanner, both of which report the problem rather than swallowing it.
  */
 
-/** Consecutive frames a barcode must be ABSENT for before it counts as gone. */
+/**
+ * Consecutive frames a barcode must be ABSENT for before it counts as gone.
+ *
+ * Only consulted under `rescanOnReturn`. In the default session-sticky mode a
+ * barcode never comes back, so how long it takes to forget it does not matter.
+ */
 const MISSES_BEFORE_GONE = 3;
 
 /**
@@ -107,12 +121,34 @@ export interface CameraScanStream {
 }
 
 export function createCameraScanStream(
-  options: { missesBeforeGone?: number } = {},
+  options: {
+    missesBeforeGone?: number;
+    /**
+     * Let a barcode be scanned again once it has left the view and returned.
+     *
+     * OFF by default, and that default is the fix. On, a pan across a shelf
+     * strip re-scans every label it crosses — measured at seventy-seven scans
+     * from sixteen printed labels. Kept as an option because it is a coherent
+     * behaviour for a fixed camera watching a conveyor, which this is not.
+     */
+    rescanOnReturn?: boolean;
+  } = {},
 ): CameraScanStream {
   const missesBeforeGone = Math.max(1, options.missesBeforeGone ?? MISSES_BEFORE_GONE);
+  const rescanOnReturn = options.rescanOnReturn === true;
 
   /** canonical barcode → consecutive frames it has been missing for. */
   const inView = new Map<string, number>();
+
+  /**
+   * Everything emitted since the camera opened.
+   *
+   * Cleared only by `reset`, which happens when the camera closes. Not affected
+   * by anything the server says — that is the CART's guard's job, and it is
+   * cleared per barcode on a failed request, which is exactly what must not
+   * re-arm a camera pointed at a sheet.
+   */
+  const scanned = new Set<string>();
 
   return {
     frame(detections) {
@@ -128,7 +164,14 @@ export function createCameraScanStream(
       const fresh: string[] = [];
 
       for (const code of seen) {
-        if (!inView.has(code)) fresh.push(code);
+        const appearing = !inView.has(code);
+        const allowed = rescanOnReturn || !scanned.has(code);
+
+        if (appearing && allowed) {
+          fresh.push(code);
+          scanned.add(code);
+        }
+
         // Zero either way: still here, so the absence count restarts.
         inView.set(code, 0);
       }
@@ -145,6 +188,7 @@ export function createCameraScanStream(
 
     reset() {
       inView.clear();
+      scanned.clear();
     },
 
     visible() {
