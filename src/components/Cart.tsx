@@ -146,6 +146,40 @@ const RETRY_DELAYS_MS = [2_000, 5_000, 12_000];
  */
 export type BasketStatus = "loading" | "ready" | "reconnecting" | "unavailable";
 
+/**
+ * What a retailer is told when a supplier's basket cannot be read.
+ *
+ * NOT THE BACKEND'S MESSAGE. That one is written for whoever fixes it, and it
+ * was reaching a shop floor verbatim:
+ *
+ *   Barry Group · Ambient: Could not read the supplier basket: Cloudflare
+ *   blocked this request at the edge (HTTP 403, https://ind.barrys.ie/...).
+ *   This is a WAF block on the SOURCE IP, not a login problem — connect the
+ *   VPN and try again. Verify with: curl -s -o /dev/null -w '%{http_code}' ...
+ *
+ * A retailer has no VPN to connect and no curl to run. Every word of that is
+ * addressed to somebody else, and the one fact that matters to them — this
+ * basket is not being shown, and it is not because of anything they did — is
+ * buried in it.
+ *
+ * AN AUTHENTICATION FAILURE IS THE EXCEPTION, and it is kept verbatim: "sign in
+ * again" is a thing the person reading it can actually do.
+ *
+ * The full text still goes to the console for whoever opens it, and the backend
+ * records the failure for the admin — see `cartRoutes`.
+ */
+function retailerMessage(raw: string, supplier: string): string {
+  // eslint-disable-next-line no-console
+  console.warn(`[basket] ${supplier} — ${raw}`);
+
+  if (/sign in|session|unauthor|401/i.test(raw)) return raw;
+
+  return (
+    `${label(supplier)} could not be reached, so its basket is not shown. ` +
+    'Nothing is wrong with your order — try again in a moment.'
+  );
+}
+
 export function useCart(jobId?: string): CartState {
   const [baskets, setBaskets] = useState<Record<string, SupplierBasket | null>>({});
   const [errors, setErrors] = useState<Record<string, string | null>>({});
@@ -208,9 +242,12 @@ export function useCart(jobId?: string): CartState {
       }
 
       // Out of attempts. NOW it is worth saying, because nothing further is
-      // going to happen on its own.
+      // going to happen on its own — but said in words a retailer can act on.
       setStatus((current) => ({ ...current, [supplier]: "unavailable" }));
-      setErrors((current) => ({ ...current, [supplier]: message }));
+      setErrors((current) => ({
+        ...current,
+        [supplier]: retailerMessage(message, supplier),
+      }));
     }
   }, []);
 
@@ -247,8 +284,10 @@ export function useCart(jobId?: string): CartState {
       } catch (err) {
         setErrors((current) => ({
           ...current,
-          [supplier]:
+          [supplier]: retailerMessage(
             err instanceof Error ? err.message : "Could not update the basket",
+            supplier,
+          ),
         }));
         // Re-read rather than assume: a failed write may still have applied.
         await refreshOne(supplier);
@@ -374,6 +413,7 @@ export function CartCell({
   cartLocked,
   isRecord,
   isVerifying,
+  mobile = false,
 }: {
   row: ReadyToOrderRow;
   cart: CartState;
@@ -399,11 +439,34 @@ export function CartCell({
    */
   isRecord?: boolean;
   isVerifying?: boolean;
+  /**
+   * Drawn for a phone card rather than a table cell.
+   *
+   * PRESENTATION ONLY — same basket, same guards, same states, in a shape a
+   * thumb can hit. The one wording change is the button naming its destination:
+   * in the table the supplier is the green column two cells to the left, and on
+   * a card there is no column to read it from, so "Add" alone would not say
+   * where the case is going.
+   */
+  mobile?: boolean;
 }) {
   const sku = row.detail.selected?.sku;
   const supplier = row.bestSupplier as CartSupplier;
 
   if (!supportsCart(supplier) || !sku) {
+    // A DASH NEEDS A COLUMN HEADING TO MEAN ANYTHING. In the table "Cart: —"
+    // reads as "nothing to do here"; alone on a card it reads as a bug, so the
+    // card says the reason the table left to a tooltip.
+    if (mobile) {
+      return (
+        <p className="text-[12px] text-ink-faint">
+          {sku
+            ? `${row.bestSupplierName} has no basket integration yet`
+            : "This selection has no supplier product code, so it cannot be ordered here"}
+        </p>
+      );
+    }
+
     return (
       <span
         className="text-[12px] text-ink-faint"
@@ -435,6 +498,16 @@ export function CartCell({
     // Add button here would either be refused or would buy on a figure nobody
     // has stood behind for four days.
     if (isRecord) {
+      // Same reason as the dash above: on a card there is no column to read it
+      // against, so the tooltip's sentence is the visible text.
+      if (mobile) {
+        return (
+          <p className="text-[12px] text-ink-faint">
+            Kept as a record — upload the file again to order at current prices.
+          </p>
+        );
+      }
+
       return (
         <span
           className="text-[11.5px] text-ink-faint"
@@ -508,12 +581,16 @@ export function CartCell({
     const basketReady = basketStatus === "ready";
 
     return (
-      <div className="flex flex-col items-start gap-0.5">
+      <div className={`flex flex-col gap-0.5 ${mobile ? "items-stretch" : "items-start"}`}>
         <button
           type="button"
           disabled={isBusy || cart.isLoading || !basketReady}
           onClick={() => void cart.addOne(supplier, sku, cases, row.product)}
-          className="rounded-md border border-teal-600 px-2 py-1 text-[11.5px] font-medium text-teal-700 hover:bg-teal-50 disabled:opacity-40"
+          className={
+            mobile
+              ? "w-full rounded-md border border-teal-600 px-3 py-2.5 text-[13px] font-medium text-teal-700 hover:bg-teal-50 disabled:opacity-40"
+              : "rounded-md border border-teal-600 px-2 py-1 text-[11.5px] font-medium text-teal-700 hover:bg-teal-50 disabled:opacity-40"
+          }
           title={
             basketReady
               ? `Add ${cases} × ${row.product} to the ${label(supplier)} basket`
@@ -528,7 +605,9 @@ export function CartCell({
               ? basketStatus === "unavailable"
                 ? "Unavailable"
                 : "Connecting…"
-              : `＋ Add${cases > 1 ? ` ${cases}` : ""}`}
+              : mobile
+                ? `＋ Add${cases > 1 ? ` ${cases}` : ""} to ${label(supplier)}`
+                : `＋ Add${cases > 1 ? ` ${cases}` : ""}`}
         </button>
 
         {/* Shown only where it means something: on a job fresh enough not to
@@ -561,6 +640,18 @@ export function CartCell({
   // one row: a buyer set it before adding and then changed it somewhere else
   // afterwards. It is now solely the Qty column's, and this cell answers one
   // question — is it in, or not.
+  // ON A CARD IT IS THE WHOLE WIDTH, where the Add button would have been.
+  // A phone shows one product at a time, so this badge is the only thing
+  // standing between a buyer and adding a second case of what they already
+  // ordered — a bare status the width of a word is too easy to scroll past.
+  if (mobile) {
+    return (
+      <div className="flex w-full items-center justify-center gap-1.5 rounded-md bg-emerald-50 px-3 py-2.5 text-[13px] font-medium text-emerald-700">
+        <span aria-hidden="true">🟢</span> In {label(supplier)} basket
+      </div>
+    );
+  }
+
   return (
     <span className="inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11.5px] font-medium text-emerald-700">
       🟢 In {label(supplier)}
@@ -590,6 +681,7 @@ export function QtyCell({
   quantity,
   onQuantityChange,
   isRecord,
+  mobile = false,
 }: {
   row: ReadyToOrderRow;
   cart: CartState;
@@ -597,10 +689,35 @@ export function QtyCell({
   quantity?: number;
   onQuantityChange: (next: number) => void;
   isRecord?: boolean;
+  /**
+   * Thumb-sized rather than cursor-sized. Same state, same handlers, same two
+   * meanings — a 24px target is a mouse's, and a mis-hit here either orders a
+   * case nobody wanted or deletes a line from a real basket.
+   */
+  mobile?: boolean;
 }) {
   const sku = row.detail.selected?.sku;
   const supplier = row.bestSupplier as CartSupplier;
   const draft = Math.max(1, quantity ?? row.cases);
+
+  /** One size for the six buttons below, so they cannot drift apart. */
+  const step = mobile
+    ? "h-9 w-9 rounded-md border border-line text-[16px] leading-none text-ink-soft hover:bg-canvas"
+    : "h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas";
+  const readout = mobile
+    ? "w-9 text-center text-[15px] tabular-nums text-ink"
+    : "w-7 text-center text-[13px] tabular-nums text-ink";
+  /**
+   * The bin, which is NOT `step` with a red hover bolted on.
+   *
+   * It carries its own `hover:bg-red-50`, and a class list holding both that and
+   * `hover:bg-canvas` is decided by their order in the compiled stylesheet
+   * rather than in the attribute — so the destructive button's hover would be
+   * settled by a coin toss.
+   */
+  const removeStep = mobile
+    ? "h-9 w-9 rounded-md border border-line text-[15px] leading-none text-ink-soft hover:bg-red-50 hover:text-red-600"
+    : "h-6 w-6 rounded border border-line text-[12px] leading-none text-ink-soft hover:bg-red-50 hover:text-red-600";
 
   // Nothing orderable, nothing to count. The file's own figure is still shown,
   // because it is what the retailer asked for even if nobody can supply it.
@@ -627,16 +744,16 @@ export function QtyCell({
           type="button"
           disabled={draft <= 1}
           onClick={() => onQuantityChange(draft - 1)}
-          className="h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
+          className={`${step} disabled:opacity-40`}
           aria-label={`Decrease quantity of ${row.product}`}
         >
           −
         </button>
-        <span className="w-7 text-center text-[13px] tabular-nums text-ink">{draft}</span>
+        <span className={readout}>{draft}</span>
         <button
           type="button"
           onClick={() => onQuantityChange(draft + 1)}
-          className="h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas"
+          className={step}
           aria-label={`Increase quantity of ${row.product}`}
         >
           ＋
@@ -655,7 +772,7 @@ export function QtyCell({
           type="button"
           disabled={isBusy}
           onClick={() => void cart.changeQuantity(supplier, line.basketItemId, 0, sku)}
-          className="h-6 w-6 rounded border border-line text-[12px] leading-none text-ink-soft hover:bg-red-50 hover:text-red-600 disabled:opacity-40"
+          className={`${removeStep} disabled:opacity-40`}
           aria-label={`Remove ${row.product} from the basket`}
           title="Remove from basket"
         >
@@ -668,22 +785,20 @@ export function QtyCell({
           onClick={() =>
             void cart.changeQuantity(supplier, line.basketItemId, line.quantity - 1, sku)
           }
-          className="h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
+          className={`${step} disabled:opacity-40`}
           aria-label={`Decrease ${row.product}`}
         >
           −
         </button>
       )}
-      <span className="w-7 text-center text-[13px] tabular-nums text-ink">
-        {isBusy ? "…" : line.quantity}
-      </span>
+      <span className={readout}>{isBusy ? "…" : line.quantity}</span>
       <button
         type="button"
         disabled={isBusy}
         onClick={() =>
           void cart.changeQuantity(supplier, line.basketItemId, line.quantity + 1, sku)
         }
-        className="h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
+        className={`${step} disabled:opacity-40`}
         aria-label={`Increase ${row.product}`}
       >
         ＋

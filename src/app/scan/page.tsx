@@ -44,12 +44,13 @@
  * The short window below only covers the gap before the cart has caught up.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
 import StockLine from "@/components/StockLine";
 import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
 import MobileScanner from "@/components/MobileScanner";
+import ScanCard from "@/components/ScanProductCard";
 import { useIsMobile } from "@/lib/useMediaQuery";
 import ProductGlyph from "@/components/ProductGlyph";
 import Pagination, { usePagination } from "@/components/Pagination";
@@ -885,15 +886,28 @@ export default function ScanPage() {
               </li>
             ))}
 
-            {paged.items.map((line) => (
-              <ScanRow
-                key={line.id}
-                line={line}
-                highlighted={highlight === line.id}
-                discovering={discovering.includes(line.id)}
-                onQuantity={(next) => void changeQuantity(line, next)}
-              />
-            ))}
+            {paged.items.map((line) => {
+              /**
+               * BOTH LAYOUTS ARE RENDERED and CSS decides which is seen —
+               * unlike the camera, where two mounted copies would open two
+               * video streams. Markup is free, and a `useMediaQuery` here would
+               * mean the server's HTML and the browser's first paint disagreed
+               * about which one exists.
+               */
+              const shared = {
+                line,
+                highlighted: highlight === line.id,
+                discovering: discovering.includes(line.id),
+                onQuantity: (next: number) => void changeQuantity(line, next),
+              };
+
+              return (
+                <Fragment key={line.id}>
+                  <ScanCard {...shared} />
+                  <ScanRow {...shared} />
+                </Fragment>
+              );
+            })}
           </ul>
         )}
 
@@ -971,7 +985,7 @@ function ScanRow({
 
   return (
     <li
-      className={`flex flex-wrap items-center gap-3 p-3 transition-colors duration-500 ${
+      className={`hidden flex-wrap items-center gap-3 p-3 transition-colors duration-500 lg:flex ${
         highlighted ? "bg-amber-50" : ""
       }`}
     >

@@ -34,6 +34,7 @@ import AppShell from "@/components/AppShell";
 import { reportSession } from "@/lib/api/session";
 import { supabase } from "@/lib/supabase";
 import { getMe, type MeResponse } from "@/lib/api/me";
+import { forgetCachedMe, readCachedMe, writeCachedMe } from "@/lib/cachedMe";
 import { applyTheme, readChoice, resolve, setChoice, type ThemeChoice } from "@/lib/theme";
 
 /** A person's display name, from their email. Mirrors the header's own rule. */
@@ -179,7 +180,12 @@ type Panel = "main" | "accessibility";
 
 export default function SettingsPage() {
   const router = useRouter();
-  const [me, setMe] = useState<MeResponse | null>(null);
+  // Painted from the last answer, then corrected — the same details the header
+  // already shows, so asking for them again before drawing anything is a delay
+  // with nothing behind it. The fetch below still runs and still wins.
+  const [me, setMe] = useState<MeResponse | null>(() =>
+    typeof window === "undefined" ? null : readCachedMe(),
+  );
   const [error, setError] = useState<string | null>(null);
   const [signingOut, setSigningOut] = useState(false);
   const [panel, setPanel] = useState<Panel>("main");
@@ -188,7 +194,9 @@ export default function SettingsPage() {
     let cancelled = false;
     void getMe()
       .then((result) => {
-        if (!cancelled) setMe(result);
+        if (cancelled) return;
+        setMe(result);
+        writeCachedMe(result);
       })
       .catch((err) => {
         if (!cancelled) {
@@ -204,6 +212,9 @@ export default function SettingsPage() {
     setSigningOut(true);
     // Reported BEFORE the sign-out: afterwards there is no token left to
     // authenticate the report with, and an unauthenticated one is dropped.
+    // The next person at this machine must not see the last one's name while
+    // their own is being fetched.
+    forgetCachedMe();
     await reportSession("signed-out");
     await supabase().auth.signOut();
     router.replace("/login");

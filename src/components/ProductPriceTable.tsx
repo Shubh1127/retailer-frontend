@@ -280,6 +280,326 @@ function StockNote({
   );
 }
 
+/**
+ * One supplier's answer about one product: the price, or why there isn't one.
+ *
+ * EXTRACTED so the table cell and the phone card cannot drift. The four
+ * meanings of "no price" here — not asked, unreachable, answered-with-nothing,
+ * out of stock — are the whole point of this screen, and a second rendering of
+ * them on a smaller layout is a second chance to flatten one into another.
+ */
+function OfferPrice({
+  offer,
+  supplierId,
+  isBest,
+}: {
+  offer: Offer;
+  supplierId: string;
+  isBest: boolean;
+}) {
+  return (
+    <>
+      {offer.livePrice !== undefined ? (
+        <div className={`nums font-medium ${isBest ? "text-good-600" : "text-ink"}`}>
+          {eur(offer.livePrice)}
+        </div>
+      ) : offer.status === "unavailable" ? (
+        // WE COULD NOT ASK. Says nothing about stock.
+        //
+        // The backend's reason — a Cloudflare 403 with a URL and a curl
+        // command — is written for whoever fixes it, so it goes to the console,
+        // not into a tooltip on a shop floor.
+        <span
+          title={`${cartSupplierLabel(supplierId)} could not be reached. This says nothing about whether they stock it.`}
+          className="text-[11.5px] text-red-600"
+        >
+          unavailable
+        </span>
+      ) : offer.status === "not-found" ? (
+        // They answered, and had nothing under this code.
+        <span
+          title={`${cartSupplierLabel(supplierId)} answered, and returned nothing for ${offer.sku ?? "this code"}.`}
+          className="text-[11.5px] text-amber-700"
+        >
+          not found
+        </span>
+      ) : (
+        // Stocked, not yet priced. Nobody has asked.
+        <span className="text-ink-faint">—</span>
+      )}
+
+      {/* DIRECTLY UNDER THE PRICE, because that is the pair a buyer reads:
+          €24.00 is only an offer if they can supply it. Nothing is drawn when
+          the supplier said nothing — see `StockNote`. */}
+      <StockNote offer={offer} supplierId={supplierId} />
+
+      {/* THE SUPPLIER CODE IS NOT PRINTED HERE. A buyer comparing four prices
+          does not read it, and four columns of digits under four figures buried
+          the numbers that are the point of the table. It is still what Add
+          sends — `row.best` carries it — and it is still on the admin's confirm
+          panel, where somebody does have to check which listing a mapping is
+          pinned to.
+
+          "single" STAYS. A case and the break-pack single sold out of it share
+          one barcode at very different prices, and an unlabelled single reads
+          as a bargain. */}
+      {offer.isSingle && (
+        <div className="text-[10.5px] font-medium text-amber-700">single</div>
+      )}
+    </>
+  );
+}
+
+/** What one row needs in order to be drawn, in either layout. */
+interface RowView {
+  row: Row;
+  quantity: number;
+  state?: AddState;
+  canOrder: boolean;
+  identity?: Offer;
+  link?: string;
+}
+
+/**
+ * One searched product, on a phone.
+ *
+ * WHY NOT THE TABLE, NARROWER
+ *
+ * Five supplier columns need 760px. A phone has 360, and both ways of forcing
+ * the table into it lose the thing the table is for: shrunk, the five prices
+ * are illegible; scrolled sideways, the product name is off the left edge by
+ * the time the fifth price arrives, so the buyer is comparing numbers with
+ * nothing attached to them.
+ *
+ * The card leads with the winner `withWinner` already picked and folds the
+ * losing quotes away. Every value here is read from the row — no second
+ * cheapest-supplier rule, no second add flow — and the prices are drawn by the
+ * same `OfferPrice` the table cells use, so "unavailable", "not found" and
+ * "not asked yet" cannot come out meaning different things on a phone.
+ */
+function SearchRowCard({
+  view,
+  columns,
+  picked,
+  onPick,
+  onQuantityChange,
+  adding,
+  onAdd,
+  blockedFromSelection,
+}: {
+  view: RowView;
+  columns: readonly string[];
+  picked: boolean;
+  onPick: (checked: boolean) => void;
+  onQuantityChange: (next: number) => void;
+  /** Which row, if any, is mid-add — the table's own `adding` state. */
+  adding: string | null;
+  onAdd: () => void;
+  blockedFromSelection: boolean;
+}) {
+  const { row, quantity, state, canOrder, identity, link } = view;
+  const [showOthers, setShowOthers] = useState(false);
+
+  const winnerId = row.best?.supplierId;
+  const winnerOffer = winnerId ? row.offers.get(winnerId) : undefined;
+
+  // Present suppliers, in the table's own column order, minus the winner. Kept
+  // whole: a supplier that answered "not found" is a real statement about their
+  // catalogue, and dropping it would make the roster look shorter than it is.
+  const others = columns.filter((id) => row.offers.has(id) && id !== winnerId);
+
+  return (
+    <article className="px-4 py-3.5" aria-label={row.name}>
+      <div className="flex items-start gap-2.5">
+        <input
+          type="checkbox"
+          checked={picked}
+          disabled={!canOrder || state !== undefined || blockedFromSelection}
+          aria-label={`Select ${row.name}`}
+          onChange={(event) => onPick(event.target.checked)}
+          className="mt-1 h-4 w-4 shrink-0 accent-teal-600 disabled:opacity-30"
+        />
+
+        <Thumb {...(identity?.imageUrl ? { src: identity.imageUrl } : {})} alt={row.name} />
+
+        {/* `break-words` throughout: wholesale product names are not written
+            for a 360px screen, and a name that overflows would either be
+            clipped or would push the card wider than the viewport. */}
+        <div className="min-w-0 flex-1">
+          <h3 className="break-words text-[14px] font-semibold leading-snug text-ink">
+            {identity?.name ?? row.name}
+          </h3>
+          <p className="mt-0.5 break-words text-[11.5px] text-ink-faint">
+            {row.brand && `${row.brand} · `}
+            {(identity?.ean ?? row.ean) && (
+              <span className="nums">EAN {identity?.ean ?? row.ean}</span>
+            )}
+            {row.size && `${identity?.ean ?? row.ean ? " · " : ""}${row.size}`}
+            {` · ${row.offers.size} supplier${row.offers.size === 1 ? "" : "s"}`}
+          </p>
+          {link && identity && (
+            <a
+              href={link}
+              target="_blank"
+              rel="noreferrer"
+              className="text-[11.5px] text-link hover:underline"
+            >
+              View at {cartSupplierLabel(identity.supplier)} ↗
+            </a>
+          )}
+        </div>
+      </div>
+
+      {/* ---- The winner, or the reason there isn't one --------------------- */}
+      {row.best && winnerOffer ? (
+        <div className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2.5">
+          <p className="text-[10.5px] font-semibold uppercase tracking-wide text-emerald-700">
+            Best price
+          </p>
+          <div className="mt-1 flex items-baseline justify-between gap-3">
+            <span className="min-w-0 break-words text-[13.5px] font-medium text-emerald-800">
+              {cartSupplierLabel(row.best.supplierId)}
+            </span>
+            <div className="shrink-0 text-right">
+              <OfferPrice offer={winnerOffer} supplierId={row.best.supplierId} isBest />
+            </div>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-3 rounded-lg border border-line bg-canvas px-3 py-2.5 text-[12.5px] text-ink-soft">
+          {/* NOT "no price" — nobody has asked yet. Nothing is ordered on a
+              catalogue price, so there is deliberately no winner until the
+              suppliers have been contacted. */}
+          No live price yet. Press &ldquo;Fetch live prices&rdquo; above to compare{" "}
+          {row.offers.size} supplier{row.offers.size === 1 ? "" : "s"}.
+        </div>
+      )}
+
+      {/* ---- The quotes that lost, folded away ----------------------------- */}
+      {others.length > 0 && (
+        <div className="mt-2.5">
+          <button
+            type="button"
+            onClick={() => setShowOthers((current) => !current)}
+            aria-expanded={showOthers}
+            className="flex w-full items-center gap-1.5 rounded-md py-1.5 text-[12.5px] font-medium text-ink-soft hover:text-ink"
+          >
+            <span
+              aria-hidden="true"
+              className={`text-[10px] transition-transform ${showOthers ? "rotate-180" : ""}`}
+            >
+              ▼
+            </span>
+            {others.length} {row.best ? "other supplier" : "supplier"}
+            {others.length === 1 ? "" : "s"}
+          </button>
+
+          {showOthers && (
+            <ul className="mt-1 space-y-1.5 rounded-lg border border-line bg-canvas px-3 py-2.5">
+              {others.map((supplierId) => {
+                const offer = row.offers.get(supplierId)!;
+                // The gap against the winner, where both are real numbers.
+                const delta =
+                  row.best && offer.livePrice !== undefined
+                    ? offer.livePrice - row.best.price
+                    : undefined;
+
+                return (
+                  <li key={supplierId} className="flex items-start justify-between gap-3">
+                    <span className="min-w-0 break-words text-[12.5px] text-ink-soft">
+                      {cartSupplierLabel(supplierId)}
+                    </span>
+                    <div className="shrink-0 text-right">
+                      <OfferPrice offer={offer} supplierId={supplierId} isBest={false} />
+                      {delta !== undefined && delta > 0 && (
+                        <div className="text-[11px] tabular-nums text-ink-faint">
+                          +{eur(delta)}
+                        </div>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+
+      {/* ---- How many ------------------------------------------------------ */}
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <span className="text-[12.5px] font-medium text-ink-soft">Qty</span>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            disabled={quantity <= 1}
+            onClick={() => onQuantityChange(quantity - 1)}
+            aria-label={`Decrease ${row.name}`}
+            className="h-9 w-9 rounded-md border border-line text-[16px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
+          >
+            −
+          </button>
+          <span className="w-9 text-center text-[15px] tabular-nums text-ink">{quantity}</span>
+          <button
+            type="button"
+            onClick={() => onQuantityChange(quantity + 1)}
+            aria-label={`Increase ${row.name}`}
+            className="h-9 w-9 rounded-md border border-line text-[16px] leading-none text-ink-soft hover:bg-canvas"
+          >
+            ＋
+          </button>
+        </div>
+      </div>
+
+      {/* ---- Into whose basket --------------------------------------------- */}
+      {/* ALREADY ADDED IS NOT A BUTTON. On a phone the Add control is the
+          widest thing on the card and sits under the thumb; leaving one on a
+          line already sent would make a second case of it the easiest thing on
+          the screen to order by accident. */}
+      <div className="mt-2.5">
+        {state ? (
+          <div
+            className={`w-full rounded-md px-3 py-2.5 text-center text-[13px] font-medium ${
+              state.kind === "error"
+                ? "bg-red-50 text-red-600"
+                : state.kind === "ok"
+                  ? "bg-emerald-50 text-emerald-700"
+                  : "bg-canvas text-ink-soft"
+            }`}
+            title={
+              state.kind === "already"
+                ? "Sent to this supplier's basket earlier. Open the basket to change it."
+                : undefined
+            }
+          >
+            {state.kind === "ok" ? "🟢 " : state.kind === "already" ? "✓ " : ""}
+            {state.text}
+          </div>
+        ) : (
+          <button
+            type="button"
+            disabled={!canOrder || adding !== null}
+            onClick={onAdd}
+            title={
+              canOrder
+                ? `Add ${quantity} × to the ${cartSupplierLabel(row.best!.supplierId)} basket`
+                : row.best
+                  ? `${cartSupplierLabel(row.best.supplierId)} has no basket integration`
+                  : "Fetch live prices first — nothing is ordered on a catalogue price"
+            }
+            className="w-full rounded-md border border-teal-600 px-3 py-2.5 text-[13px] font-medium text-teal-700 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {adding === row.key
+              ? "Adding…"
+              : canOrder
+                ? `＋ Add to ${cartSupplierLabel(row.best!.supplierId)}`
+                : "＋ Add"}
+          </button>
+        )}
+      </div>
+    </article>
+  );
+}
+
 export default function ProductPriceTable({
   products,
   emptyMessage,
@@ -650,6 +970,58 @@ export default function ProductPriceTable({
 
   const busy = adding === "__selection__";
 
+  /**
+   * Everything each row needs to be DRAWN, derived once.
+   *
+   * The table and the phone card are two presentations of one row, and both
+   * need the same four answers — how many, is it already on an order, can it be
+   * ordered at all, and which supplier's identity the row is wearing. Deriving
+   * them inside each layout's map would be the same reasoning written twice,
+   * and the two copies would only have to disagree once for a card to offer an
+   * Add the table knows is not orderable.
+   */
+  const views = rows.map((row) => {
+    const quantity = Math.max(1, qty[row.key] ?? 1);
+
+    /**
+     * A line already on an order, from any supplier in this row.
+     *
+     * Checked across ALL of the row's offers rather than just the cheapest: the
+     * buyer may have ordered it from Musgrave last week and Kadona may be
+     * cheaper today, and "you already have this on a Musgrave order" is the
+     * more useful thing to say.
+     */
+    const sent = [...row.offers.values()]
+      .filter((offer) => offer.sku && alreadySent.has(pairKey(offer.supplier, offer.sku)))
+      .map((offer) => ({
+        supplierId: offer.supplier,
+        quantity: alreadySent.get(pairKey(offer.supplier, offer.sku!)),
+      }))[0];
+
+    const state: AddState | undefined =
+      added[row.key] ??
+      (sent
+        ? {
+            kind: "already" as const,
+            // PAST TENSE, deliberately. We know we sent it and the supplier
+            // accepted it; we do not know it is still there, because somebody
+            // may have deleted the line at the supplier's own site since.
+            text: `${sent.quantity !== undefined ? `${sent.quantity} × ` : ""}added to ${cartSupplierLabel(sent.supplierId)}`,
+          }
+        : undefined);
+
+    const identity = identityOf(row);
+
+    return {
+      row,
+      quantity,
+      state,
+      canOrder: row.best !== undefined && supportsCart(row.best.supplierId),
+      identity,
+      link: identity ? realPage(identity) : undefined,
+    };
+  });
+
   return (
     <div>
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-2.5">
@@ -730,7 +1102,38 @@ export default function ProductPriceTable({
         </p>
       )}
 
-      <div className="overflow-x-auto">
+      {/* ---- Phones ---- */}
+      {/* A CARD PER PRODUCT rather than the table with smaller type. Five
+          supplier columns need 760px and a phone has half of it; the card
+          leads with the winner this table already picked and folds the losing
+          quotes away. Same rows, same winner, same Add. */}
+      <div className="divide-y divide-line lg:hidden">
+        {views.map((view) => (
+          <SearchRowCard
+            key={view.row.key}
+            view={view}
+            columns={columns}
+            picked={picked.has(view.row.key)}
+            blockedFromSelection={alreadyOnAnOrder(view.row)}
+            onPick={(checked) =>
+              setPicked((current) => {
+                const next = new Set(current);
+                if (checked) next.add(view.row.key);
+                else next.delete(view.row.key);
+                return next;
+              })
+            }
+            onQuantityChange={(next) =>
+              setQty((current) => ({ ...current, [view.row.key]: next }))
+            }
+            adding={adding}
+            onAdd={() => void addRow(view.row)}
+          />
+        ))}
+      </div>
+
+      {/* ---- Everything wider ---- */}
+      <div className="hidden overflow-x-auto lg:block">
         <table className="w-full min-w-[760px] text-[13px]">
           <thead className="border-b border-line bg-canvas text-[12px] text-ink-soft">
             <tr>
@@ -749,40 +1152,7 @@ export default function ProductPriceTable({
           </thead>
 
           <tbody>
-            {rows.map((row) => {
-              const quantity = Math.max(1, qty[row.key] ?? 1);
-
-              /**
-               * A line already on an order, from any supplier in this row.
-               *
-               * Checked across ALL of the row's offers rather than just the
-               * cheapest: the buyer may have ordered it from Musgrave last week
-               * and Kadona may be cheaper today, and "you already have this on
-               * a Musgrave order" is the more useful thing to say.
-               */
-              const sent = [...row.offers.values()]
-                .filter((offer) => offer.sku && alreadySent.has(pairKey(offer.supplier, offer.sku)))
-                .map((offer) => ({
-                  supplierId: offer.supplier,
-                  quantity: alreadySent.get(pairKey(offer.supplier, offer.sku!)),
-                }))[0];
-
-              const state: AddState | undefined =
-                added[row.key] ??
-                (sent
-                  ? {
-                      kind: "already",
-                      // PAST TENSE, deliberately. We know we sent it and the
-                      // supplier accepted it; we do not know it is still there,
-                      // because somebody may have deleted the line at the
-                      // supplier's own site since.
-                      text: `${sent.quantity !== undefined ? `${sent.quantity} × ` : ""}added to ${cartSupplierLabel(sent.supplierId)}`,
-                    }
-                  : undefined);
-              const canOrder = row.best !== undefined && supportsCart(row.best.supplierId);
-              const identity = identityOf(row);
-              const link = identity ? realPage(identity) : undefined;
-
+            {views.map(({ row, quantity, state, canOrder, identity, link }) => {
               return (
                 <tr key={row.key} className="border-b border-line last:border-0">
                   <td className="px-2 py-2.5 align-top">
@@ -846,64 +1216,7 @@ export default function ProductPriceTable({
                           // This supplier does not stock it.
                           <span className="text-ink-faint">—</span>
                         ) : (
-                          <>
-                            {offer.livePrice !== undefined ? (
-                              <div
-                                className={`nums font-medium ${isBest ? "text-good-600" : "text-ink"}`}
-                              >
-                                {eur(offer.livePrice)}
-                              </div>
-                            ) : offer.status === "unavailable" ? (
-                              // WE COULD NOT ASK. Says nothing about stock.
-                              //
-                              // The backend's reason — a Cloudflare 403 with a
-                              // URL and a curl command — is written for whoever
-                              // fixes it, so it goes to the console, not into a
-                              // tooltip on a shop floor.
-                              <span
-                                title={`${cartSupplierLabel(supplierId)} could not be reached. This says nothing about whether they stock it.`}
-                                className="text-[11.5px] text-red-600"
-                              >
-                                unavailable
-                              </span>
-                            ) : offer.status === "not-found" ? (
-                              // They answered, and had nothing under this code.
-                              <span
-                                title={`${cartSupplierLabel(supplierId)} answered, and returned nothing for ${offer.sku ?? "this code"}.`}
-                                className="text-[11.5px] text-amber-700"
-                              >
-                                not found
-                              </span>
-                            ) : (
-                              // Stocked, not yet priced. Nobody has asked.
-                              <span className="text-ink-faint">—</span>
-                            )}
-
-            {/* DIRECTLY UNDER THE PRICE, because that is the pair a
-                                buyer reads: €24.00 is only an offer if they can
-                                supply it. Nothing is drawn when the supplier
-                                said nothing — see `StockNote`. */}
-                            <StockNote offer={offer} supplierId={supplierId} />
-
-                            {/* THE SUPPLIER CODE IS NOT PRINTED HERE.
-                                A buyer comparing four prices does not read it,
-                                and four columns of digits under four figures
-                                buried the numbers that are the point of the
-                                table. It is still what Add sends — `row.best`
-                                carries it — and it is still on the admin's
-                                confirm panel, where somebody does have to check
-                                which listing a mapping is pinned to.
-
-                                "single" STAYS. A case and the break-pack single
-                                sold out of it share one barcode at very
-                                different prices, and an unlabelled single reads
-                                as a bargain. */}
-                            {offer.isSingle && (
-                              <div className="text-[10.5px] font-medium text-amber-700">
-                                single
-                              </div>
-                            )}
-                          </>
+                          <OfferPrice offer={offer} supplierId={supplierId} isBest={isBest} />
                         )}
                       </td>
                     );

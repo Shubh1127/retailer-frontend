@@ -4,16 +4,15 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  forgetLocation,
   getMe,
-  shareLocation,
-  type MeLocation,
+  MeError,
   type MeResponse,
 } from "@/lib/api/me";
 import { reportSession } from "@/lib/api/session";
 import { supabase } from "@/lib/supabase";
 import ThemeToggle from "@/components/ThemeToggle";
 import MobileTabBar from "@/components/MobileTabBar";
+import { forgetCachedMe, readCachedMe, writeCachedMe } from "@/lib/cachedMe";
 import NavIcon, { type NavIconName } from "@/components/NavIcons";
 
 /**
@@ -32,33 +31,20 @@ const tabs: {
   { href: "/scan", label: "Scan", enabled: true, icon: "scan" },
   { href: "/product-search", label: "Product search", enabled: true, icon: "search" },
   { href: "/orders", label: "Order list", enabled: true, icon: "list" },
-  { href: "/baskets", label: "Baskets", enabled: true, icon: "basket" },
   // Compare, Reconcile and Mappings used to sit here greyed out with a
   // "Coming soon" tooltip. Six months of that teaches people to read past the
   // nav rather than along it, and they cost width the real destinations wanted.
   // They come back when they exist.
   //
-  // Suppliers and Account are reachable from the avatar menu instead — see
-  // AccountMenu. Both are settings rather than work, and the nav is for work.
+  // Suppliers, Baskets and Account are reachable from the avatar menu instead
+  // — see AccountMenu.
+  //
+  // BASKETS MOVED THERE TOO. It reads like a destination and is really a
+  // review: the working paths all END at a basket — a job's Add, a scan's Add,
+  // a search's Add — so it is where you go to check what those put there, not
+  // where you go to do something. Off the nav, the five that remain are the
+  // five things a retailer actually starts.
 ];
-
-function PinIcon() {
-  return (
-    <svg
-      width="15"
-      height="15"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      <path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z" />
-      <circle cx="12" cy="10" r="3" />
-    </svg>
-  );
-}
 
 /**
  * A click-to-open panel.
@@ -165,162 +151,6 @@ function initials(email: string | undefined): string {
   return letters.join("") || "?";
 }
 
-/**
- * The location chip.
- *
- * Shows what is actually known, and says which kind it is. A location guessed
- * from an IP block and one the user deliberately shared are different facts, and
- * presenting them identically would overstate the first.
- *
- * Permission is only ever requested by pressing the button. Calling
- * `getCurrentPosition` on mount would fire the browser's prompt at somebody who
- * has not asked for the feature, which is the surest way to get it denied
- * permanently.
- */
-function LocationChip({
-  location,
-  onChanged,
-}: {
-  location: MeLocation;
-  onChanged: (next: MeLocation) => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const ask = useCallback(() => {
-    if (!("geolocation" in navigator)) {
-      setError("This browser cannot report a location.");
-      return;
-    }
-
-    setBusy(true);
-    setError(null);
-
-    navigator.geolocation.getCurrentPosition(
-      async (position) => {
-        try {
-          const next = await shareLocation({
-            latitude: position.coords.latitude,
-            longitude: position.coords.longitude,
-            ...(Number.isFinite(position.coords.accuracy)
-              ? { accuracyMetres: position.coords.accuracy }
-              : {}),
-          });
-          onChanged(next);
-        } catch (err) {
-          setError(err instanceof Error ? err.message : "Could not save the location");
-        } finally {
-          setBusy(false);
-        }
-      },
-      (positionError) => {
-        setBusy(false);
-        // The three cases mean genuinely different things, and "could not get
-        // location" for all of them tells somebody nothing about what to do.
-        setError(
-          positionError.code === positionError.PERMISSION_DENIED
-            ? "Location permission was declined. You can allow it in your browser's site settings."
-            : positionError.code === positionError.POSITION_UNAVAILABLE
-              ? "Your device could not determine a position."
-              : "Timed out finding your location.",
-        );
-      },
-      { enableHighAccuracy: false, timeout: 10_000, maximumAge: 5 * 60_000 },
-    );
-  }, [onChanged]);
-
-  const forget = useCallback(async () => {
-    setBusy(true);
-    setError(null);
-    try {
-      onChanged(await forgetLocation());
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not clear the location");
-    } finally {
-      setBusy(false);
-    }
-  }, [onChanged]);
-
-  return (
-    <div className="hidden sm:block">
-      <Popover
-        label="Location settings"
-        triggerClassName="flex items-center gap-1 rounded-md px-1.5 py-1 text-[12.5px] text-ink-soft hover:bg-canvas hover:text-ink"
-        trigger={
-          <>
-            <PinIcon />
-            <span>
-              {location.label ?? "Location not set"}
-              {location.source === "ip" && (
-                <span className="ml-1 text-ink-faint">(approx.)</span>
-              )}
-            </span>
-          </>
-        }
-      >
-        {() => (
-          <>
-            <div className="text-xs font-semibold text-ink">Location</div>
-
-            <div className="mt-2 space-y-1.5 text-[12px] text-ink-soft">
-              <div>
-                <span className="font-medium text-ink">Showing:</span>{" "}
-                {location.label ?? "Nothing yet"}
-              </div>
-              <div>
-                <span className="font-medium text-ink">Source:</span>{" "}
-                {location.source === "precise"
-                  ? "Shared from your device"
-                  : location.source === "ip"
-                    ? "Estimated from your network address"
-                    : "Unknown"}
-              </div>
-              {location.source === "precise" &&
-                location.accuracyMetres !== undefined && (
-                  <div>
-                    <span className="font-medium text-ink">Accurate to:</span> about{" "}
-                    {Math.round(location.accuracyMetres)} m
-                  </div>
-                )}
-
-              {error && (
-                <div className="rounded bg-red-50 px-2 py-1 text-[11px] text-red-700">
-                  {error}
-                </div>
-              )}
-
-              {location.canAsk ? (
-                <>
-                  <p className="pt-1 text-[11.5px] text-ink-faint">
-                    Sharing your location sets your store&apos;s region. Your
-                    browser will ask first, and you can remove it at any time.
-                  </p>
-                  <button
-                    type="button"
-                    disabled={busy}
-                    onClick={ask}
-                    className="mt-1 w-full rounded-md bg-teal-500 px-2.5 py-1.5 text-[12px] font-medium text-white hover:bg-teal-600 disabled:opacity-50"
-                  >
-                    {busy ? "Locating…" : "Use my location"}
-                  </button>
-                </>
-              ) : (
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={forget}
-                  className="mt-1 w-full rounded-md border border-line px-2.5 py-1.5 text-[12px] text-ink-soft hover:bg-canvas hover:text-ink disabled:opacity-50"
-                >
-                  {busy ? "Working…" : "Remove my location"}
-                </button>
-              )}
-            </div>
-          </>
-        )}
-      </Popover>
-    </div>
-  );
-}
 
 function AccountMenu({ me }: { me: MeResponse["user"] }) {
   const router = useRouter();
@@ -352,17 +182,26 @@ function AccountMenu({ me }: { me: MeResponse["user"] }) {
             </div>
           </div>
 
-          {/* Suppliers only. The account details are already ABOVE — name,
-              store, role — and the theme is the button beside this avatar, so
-              a link called "Account" here would lead to a page repeating what
-              the panel it was opened from already said. It stays a phone
-              destination, where the header does not exist. */}
+          {/* Baskets and Suppliers. The account details are already ABOVE —
+              name, store, role — and the theme is the button beside this
+              avatar, so a link called "Account" here would lead to a page
+              repeating what the panel it was opened from already said. It
+              stays a phone destination, where the header does not exist. */}
           <div className="mt-2 border-t border-line pt-2">
+            <Link
+              href="/baskets"
+              onClick={close}
+              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[12.5px] text-ink-soft hover:bg-canvas hover:text-ink"
+            >
+              <NavIcon name="basket" size={15} />
+              Baskets
+            </Link>
             <Link
               href="/suppliers"
               onClick={close}
-              className="block rounded-md px-2 py-1.5 text-[12.5px] text-ink-soft hover:bg-canvas hover:text-ink"
+              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[12.5px] text-ink-soft hover:bg-canvas hover:text-ink"
             >
+              <NavIcon name="store" size={15} />
               Suppliers
             </Link>
           </div>
@@ -373,6 +212,10 @@ function AccountMenu({ me }: { me: MeResponse["user"] }) {
               // Closed first: the sign-out and redirect are asynchronous, and a
               // menu left hanging open over a changing page looks like a freeze.
               close();
+              // The next person at this machine must not see the last one's
+              // name while their own is being fetched. Cleared before the sign
+              // out rather than after, so a redirect cannot outrun it.
+              forgetCachedMe();
               // Reported BEFORE the sign-out: afterwards there is no token left to
               // authenticate the report with, and an unauthenticated one is dropped.
               await reportSession("signed-out");
@@ -396,7 +239,20 @@ export default function AppShell({
   active: string;
   children: React.ReactNode;
 }) {
-  const [me, setMe] = useState<MeResponse | null>(null);
+  /**
+   * PAINTED FROM THE LAST ANSWER, then corrected by a fresh one.
+   *
+   * The lazy initialiser runs during the first render, so the header arrives
+   * with the page instead of a beat after it. `/api/me` is the same answer
+   * every time for the same person, and it was being asked on every single
+   * page load — name, store and avatar all appearing late.
+   *
+   * The cache never decides what is TRUE. The request below still goes out on
+   * every mount and overwrites whatever was shown.
+   */
+  const [me, setMe] = useState<MeResponse | null>(() =>
+    typeof window === 'undefined' ? null : readCachedMe(),
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -405,16 +261,27 @@ export default function AppShell({
     // the chrome, not the page.
     void getMe()
       .then((result) => {
-        if (!cancelled) setMe(result);
+        if (cancelled) return;
+        setMe(result);
+        writeCachedMe(result);
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        /**
+         * A REJECTED SESSION MUST NOT LEAVE A NAME ON SCREEN.
+         *
+         * Any other failure — offline, a 500 — is worth riding out on the
+         * cached details, which is the point of having them. A 401 is
+         * different: the server has disowned this session, and continuing to
+         * show whose it was would be the one lie this cache could tell.
+         */
+        if (error instanceof MeError && error.status === 401) {
+          forgetCachedMe();
+          setMe(null);
+        }
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
-
-  const onLocationChanged = useCallback((location: MeLocation) => {
-    setMe((current) => (current ? { ...current, location } : current));
   }, []);
 
   return (
@@ -480,7 +347,6 @@ export default function AppShell({
                     {me.user.storeName}
                   </span>
                 )}
-                <LocationChip location={me.location} onChanged={onLocationChanged} />
               </>
             )}
 

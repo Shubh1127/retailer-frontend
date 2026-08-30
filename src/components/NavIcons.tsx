@@ -24,6 +24,7 @@ export type NavIconName =
   | "search"
   | "list"
   | "basket"
+  | "store"
   | "user";
 
 const PATHS: Record<NavIconName, React.ReactNode> = {
@@ -69,6 +70,15 @@ const PATHS: Record<NavIconName, React.ReactNode> = {
       <path d="M4 8h16l-1.4 10.2a2 2 0 0 1-2 1.8H7.4a2 2 0 0 1-2-1.8L4 8Z" />
       <path d="M8.5 8 12 3l3.5 5" />
       <path d="M10 12v4M14 12v4" />
+    </>
+  ),
+  /** A shopfront awning — the wholesalers we buy FROM, not our own shop. */
+  store: (
+    <>
+      <path d="M4 9.5V19a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1V9.5" />
+      <path d="M3 9.5 4.8 5a1 1 0 0 1 .9-.6h12.6a1 1 0 0 1 .9.6L21 9.5" />
+      <path d="M3 9.5h18" />
+      <path d="M9.5 20v-5h5v5" />
     </>
   ),
   user: (

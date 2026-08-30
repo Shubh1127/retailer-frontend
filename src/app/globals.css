@@ -8,6 +8,11 @@
  * Values are bare RGB channels, not colours, so Tailwind's opacity modifiers
  * keep working — see the note in tailwind.config.ts.
  *
+ * NEITHER PALETTE IS AT THE EXTREME. Light mode's brightest surface is not
+ * #FFFFFF and dark mode's darkest is not #000000, for the same reason from
+ * opposite ends: a screen held at the limit of its range is glare, and thin
+ * type on it shimmers.
+ *
  * The dark values are not the light ones inverted. Pure white text on pure
  * black is harsh and makes thin type shimmer, so the darkest surface is a very
  * dark blue-grey and the brightest text stops short of white. Tint backgrounds
@@ -20,9 +25,33 @@
   --ink-soft: 107 114 128;
   --ink-faint: 156 163 175;
 
-  --surface: 255 255 255;
-  --canvas: 250 250 250;
-  --line: 229 231 235;
+  /*
+   * NOT PURE WHITE, and the canvas is a real step below it.
+   *
+   * It used to be #FFFFFF cards on a #FAFAFA page: two values five points
+   * apart, so nearly the whole screen sat at the very top of the luminance
+   * range with almost nothing separating a card from the page behind it. On a
+   * bright shop floor that is glare, and over a long ordering session it is
+   * tiring in a way nobody attributes to the software.
+   *
+   * The card stays the lightest thing on screen — it is the content, and it
+   * should read that way — but stops just short of white. The canvas drops
+   * nine points further, which is what actually reduces the brightness of the
+   * page, because the canvas is most of what you are looking at.
+   *
+   * Neutral-cool rather than warm, matching `--ink` (17 24 39), which is a
+   * blue-black. A warm grey under blue-black text reads as a slightly dirty
+   * page rather than as a deliberate tint.
+   */
+  --surface: 252 252 253;
+  --canvas: 243 244 246;
+
+  /*
+   * A shade darker than it was, because the canvas moved down to meet it. At
+   * the old value a border between two panels would have been three points
+   * from the page behind it and effectively invisible.
+   */
+  --line: 226 228 233;
 
   --link: 11 91 85;
   --shadow: 17 24 39;
@@ -59,8 +88,13 @@
   --sky-50: 240 249 255;
   --sky-700: 3 105 161;
 
-  --skeleton-from: 243 244 246;
-  --skeleton-via: 236 236 238;
+  /*
+   * Moved down with the canvas. At the old values the shimmer's base was the
+   * same colour as the page behind it, so a loading placeholder read as a hole
+   * rather than as something arriving.
+   */
+  --skeleton-from: 236 237 241;
+  --skeleton-via: 228 229 234;
   --selection-bg: 204 251 241;
   --selection-fg: 11 91 85;
   --scrollbar: 229 231 235;

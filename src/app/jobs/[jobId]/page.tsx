@@ -30,6 +30,7 @@ import {
   type RowVerification,
 } from "@/lib/api/jobs";
 import { supplierLabel } from "@/lib/api/cart";
+import MobileProductComparisonCard from "@/components/MobileProductComparisonCard";
 import ProductImage from "@/components/ProductImage";
 import Pagination, { usePagination } from "@/components/Pagination";
 
@@ -654,7 +655,36 @@ export default function JobDetailsPage({
           <div className="overflow-hidden rounded-xl border border-line bg-surface">
             <div className="overflow-x-auto">
               {tab === "ready" ? (
-                <table className="w-full min-w-[720px] text-[13px]">
+                <>
+                {/* ---- Phones ---- */}
+                {/* The same card the dashboard draws, for the same reason: the
+                    price columns need 720px and a phone has half of it. See
+                    `MobileProductComparisonCard`. */}
+                <div className="divide-y divide-line lg:hidden">
+                  {pagedReady.items.map((row) => (
+                    <MobileProductComparisonCard
+                      key={row.row}
+                      row={row}
+                      cart={cart}
+                      columns={priceColumns}
+                      {...(draftQty[row.row] !== undefined
+                        ? { quantity: draftQty[row.row] }
+                        : {})}
+                      onQuantityChange={(next) =>
+                        setDraftQty((current) => ({ ...current, [row.row]: next }))
+                      }
+                      {...(verifications[row.row]
+                        ? { verification: verifications[row.row]! }
+                        : {})}
+                      cartLocked={cartLock?.locked === true}
+                      isRecord={isRecord}
+                      isVerifying={verifyingRows.includes(row.row)}
+                    />
+                  ))}
+                </div>
+
+                {/* ---- Everything wider ---- */}
+                <table className="hidden w-full min-w-[720px] text-[13px] lg:table">
                   <thead className="border-b border-line bg-canvas text-[12px] text-ink-soft">
                     <tr>
                       <th className="px-3 py-2 text-left font-medium">Row</th>
@@ -759,6 +789,7 @@ export default function JobDetailsPage({
                     ))}
                   </tbody>
                 </table>
+                </>
               ) : (
                 <table className="w-full min-w-[720px] text-[13px]">
                   <thead className="border-b border-line bg-canvas text-[12px] text-ink-soft">

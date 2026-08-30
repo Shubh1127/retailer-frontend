@@ -74,8 +74,13 @@ export function supplierColumns(rows: readonly ReadyToOrderRow[]): SupplierColum
  * basket the offer came from. Where a product somehow appears in both, the
  * cheaper wins the cell — the column is a claim about what Barry charges, and
  * showing the dearer of two real prices would understate them.
+ *
+ * EXPORTED so the phone card reads the same offer this column does. The card
+ * draws the same suppliers stacked rather than side by side, and a second
+ * "which offer does this supplier's price come from" would be a second answer
+ * to a question that already has one.
  */
-function cheapestOffer(row: ReadyToOrderRow, supplierId: string) {
+export function cheapestOffer(row: ReadyToOrderRow, supplierId: string) {
   return row.detail.offers
     .filter(
       (entry) =>

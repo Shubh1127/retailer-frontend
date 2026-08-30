@@ -41,6 +41,7 @@ import { sameDisplaySupplier, supplierLabel } from "@/lib/api/cart";
 // skeleton is needed here.
 import { TableSkeleton } from "@/components/TableSkeleton";
 import Pagination, { usePagination } from "@/components/Pagination";
+import MobileProductComparisonCard from "@/components/MobileProductComparisonCard";
 import QuickProductSearch from "@/components/QuickProductSearch";
 import StartOptions from "@/components/StartOptions";
 import ProductImage from "@/components/ProductImage";
@@ -912,7 +913,38 @@ export default function DashboardPage() {
               (job.status === "running" || job.status === "queued") ? (
                 <TableSkeleton rows={8} columns={7} />
               ) : tab === "ready" ? (
-                <table className="w-full min-w-[720px] text-[13px]">
+                <>
+                {/* ---- Phones ---- */}
+                {/* A CARD PER PRODUCT rather than the table with smaller type.
+                    Five price columns need 720px, and the two ways to fit that
+                    on a phone both lose the comparison: shrunk, none of the
+                    numbers are legible; scrolled sideways, the product name
+                    leaves the screen before the last price arrives. The card
+                    leads with the winner the pipeline already chose and folds
+                    the rest away — same rows, same decision, same basket. */}
+                <div className="divide-y divide-line lg:hidden">
+                  {pagedReady.items.map((row) => (
+                    <MobileProductComparisonCard
+                      key={row.row}
+                      row={row}
+                      cart={cart}
+                      columns={priceColumns}
+                      {...(decisions.get(row.row)
+                        ? { decision: decisions.get(row.row)! }
+                        : {})}
+                      {...(draftQty[row.row] !== undefined
+                        ? { quantity: draftQty[row.row] }
+                        : {})}
+                      onQuantityChange={(next) =>
+                        setDraftQty((current) => ({ ...current, [row.row]: next }))
+                      }
+                      onOpenDetail={() => setOpenRow(row)}
+                    />
+                  ))}
+                </div>
+
+                {/* ---- Everything wider ---- */}
+                <table className="hidden w-full min-w-[720px] text-[13px] lg:table">
                   <thead className="border-b border-line bg-canvas text-[12px] text-ink-soft">
                     <tr>
                       <SortHeader
@@ -1104,6 +1136,7 @@ export default function DashboardPage() {
                     })}
                   </tbody>
                 </table>
+                </>
               ) : (
                 <table className="w-full min-w-[720px] text-[13px]">
                   <thead className="border-b border-line bg-canvas text-[12px] text-ink-soft">

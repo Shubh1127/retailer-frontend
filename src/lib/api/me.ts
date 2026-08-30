@@ -22,22 +22,8 @@ export interface Me {
   lastLoginAt?: string;
 }
 
-export interface MeLocation {
-  label?: string;
-  /**
-   * 'precise' — the user granted browser permission
-   * 'ip'      — guessed from the address block, accurate to a city at best
-   * 'unknown' — nothing to show
-   */
-  source: "precise" | "ip" | "unknown";
-  accuracyMetres?: number;
-  /** True when no location has been granted, so it is reasonable to offer to ask. */
-  canAsk: boolean;
-}
-
 export interface MeResponse {
   user: Me;
-  location: MeLocation;
 }
 
 export class MeError extends Error {
@@ -126,23 +112,4 @@ export async function getMyStats(): Promise<MeStats> {
   return await call<MeStats>("/api/me/stats");
 }
 
-/** Store the position the browser was allowed to share. */
-export async function shareLocation(position: {
-  latitude: number;
-  longitude: number;
-  accuracyMetres?: number;
-}): Promise<MeLocation> {
-  return (
-    await call<{ location: MeLocation }>("/api/me/location", {
-      method: "PUT",
-      body: position,
-    })
-  ).location;
-}
 
-/** Withdraw it again. */
-export async function forgetLocation(): Promise<MeLocation> {
-  return (
-    await call<{ location: MeLocation }>("/api/me/location", { method: "DELETE" })
-  ).location;
-}
