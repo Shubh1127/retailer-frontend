@@ -506,12 +506,27 @@ export default function JobDetailsPage({
             </div>
           ) : (
             cartLock?.locked && (
-              <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-[12.5px] text-amber-900">
-                <strong className="font-medium">Why Add to Cart is asking first:</strong>{" "}
-                {cartLock.reason} Use <strong>Check prices</strong> above — it asks each
-                supplier what these products cost right now, and unlocks the ones that
-                are unchanged. Editing this job is a separate matter and follows its own
-                24-hour rule.
+              /* ONE LINE, NOT A PARAGRAPH.
+
+                 This used to explain the whole price-lock policy — why Add is
+                 asking, what Check prices does, and how the separate 24-hour
+                 editing rule differs. All true, and all of it addressed to
+                 somebody reading the page for the first time. A buyer opening a
+                 job from history already knows what a stale price is; what they
+                 need is the age and the button, and burying those in five lines
+                 of policy is how the banner got scrolled past. */
+              <div className="mb-4 flex flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2 text-[12.5px] text-amber-900">
+                <span>
+                  <strong className="font-medium">Prices are out of date.</strong> Re-check
+                  them before ordering.
+                </span>
+                {/* The backend's own sentence carries the age — "read 20 hours
+                    ago" — which is the one fact the short form must not lose. */}
+                {cartLock.reason && (
+                  <span className="text-amber-800/80" title={cartLock.reason}>
+                    {cartLock.reason.split(/(?<=\.)\s/)[0]}
+                  </span>
+                )}
               </div>
             )
           )}

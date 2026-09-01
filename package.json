@@ -5,7 +5,9 @@
   "description": "RetailCompare — cross-supplier wholesale ordering assistant, frontend UI preview (no live data or backend wiring yet)",
   "scripts": {
     "dev": "next dev",
+    "prebuild": "node scripts/copy-zxing-wasm.mjs",
     "build": "next build",
+    "postinstall": "node scripts/copy-zxing-wasm.mjs",
     "start": "next start",
     "lint": "next lint",
     "test": "vitest run",
@@ -13,6 +15,7 @@
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.0",
+    "barcode-detector": "^3.2.2",
     "framer-motion": "^13.1.1",
     "next": "14.2.35",
     "react": "^18.3.1",

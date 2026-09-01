@@ -96,7 +96,16 @@ export function searchSupplierListings(
  *                  which tells a buyer a wholesaler we could not reach does
  *                  not sell the product.
  */
-export type LivePriceStatus = "priced" | "not-found" | "unavailable";
+/**
+ * Why a supplier has no price for a line.
+ *
+ * `not-connected` is separate from `unavailable` because they send a retailer
+ * to opposite places: "unavailable" means the wholesaler could not be reached
+ * and there is nothing to do but wait, while "not connected" is a setting they
+ * control and the fix is one button. Folding them together is how somebody
+ * concludes four wholesalers are down.
+ */
+export type LivePriceStatus = "priced" | "not-found" | "unavailable" | "not-connected";
 
 export interface LivePrice {
   supplierId: string;

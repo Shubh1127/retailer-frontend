@@ -13,13 +13,25 @@
  * of its own choosing.
  */
 
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
-const { fetchBasketAddsMock, addItemsMock } = vi.hoisted(() => ({
+const { fetchBasketAddsMock, addItemsMock, onboardingMock, fetchPricesMock } = vi.hoisted(() => ({
   fetchBasketAddsMock: vi.fn(),
   addItemsMock: vi.fn(),
+  onboardingMock: vi.fn(),
+  fetchPricesMock: vi.fn(),
 }));
+
+vi.mock("@/lib/api/supplierCredentials", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/supplierCredentials")>();
+  return { ...actual, getOnboardingState: onboardingMock };
+});
+
+vi.mock("@/lib/api/endpoint", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/api/endpoint")>();
+  return { ...actual, fetchLivePrices: fetchPricesMock };
+});
 
 vi.mock("@/lib/api/cart", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api/cart")>();
@@ -34,6 +46,17 @@ afterEach(() => {
   cleanup();
   fetchBasketAddsMock.mockReset();
   addItemsMock.mockReset();
+  fetchPricesMock.mockReset();
+});
+
+beforeEach(() => {
+  // Connected by default; the gate tests below override it.
+  onboardingMock.mockReset().mockResolvedValue({
+    firstLogin: false,
+    hasConnectedSuppliers: true,
+    connectedCount: 1,
+    connectable: [],
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -155,5 +178,49 @@ describe("adding from the card", () => {
       expect(within(card).getByText(/added to O'Reilly/)).toBeTruthy(),
     );
     expect(within(card).queryByRole("button", { name: /Add to/ })).toBeNull();
+  });
+});
+
+describe("fetching live prices needs a connected account", () => {
+  /**
+   * THE REGRESSION THIS PINS.
+   *
+   * Scanning and sending an order list were gated; this third door into
+   * supplier contact was not. A retailer with nothing connected pressed Fetch
+   * live prices, waited, and was told every supplier was "unavailable" — which
+   * states the wholesaler could not be reached and explicitly says nothing
+   * about stock, so it pointed away from the one thing they could fix.
+   */
+  it("stops the fetch and explains why when nothing is connected", async () => {
+    onboardingMock.mockResolvedValue({
+      firstLogin: false,
+      hasConnectedSuppliers: false,
+      connectedCount: 0,
+      connectable: [],
+    });
+    fetchBasketAddsMock.mockResolvedValue([]);
+
+    render(<ProductPriceTable products={PRODUCTS} />);
+    await screen.findByRole("article", { name: "Smarties Hexatube Std" });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /fetch live prices/i })[0]!);
+
+    expect(await screen.findByRole("dialog")).toBeTruthy();
+    expect(screen.getByText(/connect a supplier account first/i)).toBeTruthy();
+    // No supplier is contacted at all.
+    expect(fetchPricesMock).not.toHaveBeenCalled();
+  });
+
+  it("fetches normally once an account is connected", async () => {
+    fetchBasketAddsMock.mockResolvedValue([]);
+    fetchPricesMock.mockResolvedValue({ prices: [], pricedAt: new Date().toISOString() });
+
+    render(<ProductPriceTable products={PRODUCTS} />);
+    await screen.findByRole("article", { name: "Smarties Hexatube Std" });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /fetch live prices/i })[0]!);
+
+    await waitFor(() => expect(fetchPricesMock).toHaveBeenCalled());
+    expect(screen.queryByRole("dialog")).toBeNull();
   });
 });

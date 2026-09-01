@@ -36,6 +36,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { canonicalBarcode, createCameraScanStream } from "@/lib/cameraScanStream";
+import { BARCODE_FORMATS, createBarcodeReader, type BarcodeReader } from "@/lib/barcodeDetector";
 import { AnimatePresence, motion } from "framer-motion";
 
 import ScanThumb from "@/components/ScanThumb";
@@ -45,8 +46,6 @@ import type { ScanCart, ScanLine } from "@/lib/api/scan";
 
 /** How often the camera is asked to decode. ~7/s is well past a human's pace. */
 const DECODE_INTERVAL_MS = 140;
-
-const FORMATS = ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "itf"] as const;
 
 type Sheet = "closed" | "peek";
 
@@ -170,13 +169,18 @@ export default function MobileScanner({
     let timer: ReturnType<typeof setInterval> | null = null;
 
     void (async () => {
-      const Detector = (window as unknown as { BarcodeDetector?: any }).BarcodeDetector;
-      if (!Detector) {
-        setError(
-          "This browser cannot read barcodes from the camera. Type the number below, or use a handheld scanner.",
-        );
-        return;
-      }
+      /**
+       * BOTH AT ONCE, deliberately.
+       *
+       * On an iPhone the reader is a megabyte of WebAssembly, and asking for it
+       * before the camera would leave the buyer looking at a black screen while
+       * it downloads. The permission prompt and the download are independent,
+       * so they overlap and the viewfinder appears at the speed it always did.
+       */
+      const readerPromise = createBarcodeReader(BARCODE_FORMATS);
+      // Nothing awaits this until below, and an unhandled rejection in between
+      // is noise in the console — the real handling is the catch further down.
+      readerPromise.catch(() => {});
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -200,21 +204,40 @@ export default function MobileScanner({
         const capabilities = track?.getCapabilities?.() as { torch?: boolean } | undefined;
         setTorchAvailable(Boolean(capabilities?.torch));
 
-        const detector = new Detector({ formats: FORMATS });
+        let detector: BarcodeReader;
+        try {
+          detector = await readerPromise;
+        } catch {
+          setError(
+            "The barcode reader could not be loaded. Type the number below, or use a handheld scanner.",
+          );
+          return;
+        }
+        if (cancelled) return;
+
+        /**
+         * ONE DECODE AT A TIME.
+         *
+         * The wasm reader takes longer than a tick on an older iPhone, and
+         * `setInterval` does not wait. Without this the decodes pile up until
+         * the frames being read are seconds behind the one on screen. Skipping
+         * the tick entirely — rather than feeding an empty frame — is the point:
+         * a frame that was never looked at is not evidence that a barcode left
+         * the view.
+         */
+        let decoding = false;
 
         timer = setInterval(() => {
           void (async () => {
             if (!videoRef.current || videoRef.current.readyState < 2) return;
+            if (decoding) return;
 
-            let raw: string[] = [];
+            decoding = true;
+            let raw: string[];
             try {
-              const found = await detector.detect(videoRef.current);
-              raw = found
-                .map((result: { rawValue?: unknown }) => String(result?.rawValue ?? ""))
-                .filter((value: string) => value !== "");
-            } catch {
-              // A single failed frame is normal — motion blur, bad light. The
-              // next tick tries again; reporting it would be constant noise.
+              raw = await detector.detect(videoRef.current);
+            } finally {
+              decoding = false;
             }
 
             /**
@@ -289,15 +312,19 @@ export default function MobileScanner({
    */
   const onGallery = useCallback(
     async (file: File) => {
-      const Detector = (window as unknown as { BarcodeDetector?: any }).BarcodeDetector;
-      if (!Detector) return;
-
       setGalleryBusy(true);
       try {
-        const bitmap = await createImageBitmap(file);
-        const detector = new Detector({ formats: FORMATS });
-        const found = await detector.detect(bitmap);
-        bitmap.close?.();
+        const detector = await createBarcodeReader(BARCODE_FORMATS);
+        /**
+         * The FILE, not a bitmap of it.
+         *
+         * Both readers take a `Blob`, and handing the wasm one an already
+         * decoded `ImageBitmap` costs a full-resolution readback of a photo
+         * that can be twelve megapixels. Safari also refuses `createImageBitmap`
+         * on some HEIC captures, which turned a readable docket into "that
+         * image could not be read".
+         */
+        const found = await detector.detect(file);
 
         if (found.length === 0) {
           setError("No barcode found in that image.");
@@ -315,8 +342,8 @@ export default function MobileScanner({
          * not barcodes at all, and each was becoming a cart line.
          */
         const unique = new Set<string>();
-        for (const result of found) {
-          const code = canonicalBarcode(String(result?.rawValue ?? ""));
+        for (const value of found) {
+          const code = canonicalBarcode(value);
           if (code) unique.add(code);
         }
 

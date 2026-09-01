@@ -12,6 +12,7 @@ import { reportSession } from "@/lib/api/session";
 import { supabase } from "@/lib/supabase";
 import ThemeToggle from "@/components/ThemeToggle";
 import MobileTabBar from "@/components/MobileTabBar";
+import FirstLoginRedirect from "@/components/FirstLoginRedirect";
 import { forgetCachedMe, readCachedMe, writeCachedMe } from "@/lib/cachedMe";
 import NavIcon, { type NavIconName } from "@/components/NavIcons";
 
@@ -286,6 +287,10 @@ export default function AppShell({
 
   return (
     <div className="min-h-screen bg-canvas">
+      {/* Offers Get Started once, on a genuine first sign-in with nothing
+          connected. Renders nothing; see the component. */}
+      <FirstLoginRedirect />
+
       {/*
        * DESKTOP ONLY. On a phone the bottom tab bar is the navigation, and a
        * header carrying a second copy of it — plus a logo, a theme button and

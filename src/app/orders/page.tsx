@@ -24,6 +24,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import AppShell from "@/components/AppShell";
+import { useSupplierGate } from "@/components/SupplierGate";
 import Pagination, { usePagination } from "@/components/Pagination";
 import {
   clearOrderList,
@@ -121,7 +122,20 @@ export default function OrdersPage() {
     [],
   );
 
+  /**
+   * GATED AT SEND, NOT AT IMPORT.
+   *
+   * Importing a file only parses it into a list — no supplier is contacted, and
+   * a retailer who has not connected an account yet can still build the list
+   * they will send once they have. Sending is where a job starts and every
+   * wholesaler is asked, so that is where having nobody to ask actually matters.
+   */
+  const gate = useSupplierGate();
+
   const send = useCallback(async () => {
+    // No job is created when the gate refuses.
+    if (!gate.guard()) return;
+
     setBusy("submit");
     setError(null);
     try {
@@ -133,7 +147,7 @@ export default function OrdersPage() {
       setError(err instanceof Error ? err.message : "Could not send this list");
       setBusy(null);
     }
-  }, [router]);
+  }, [router, gate]);
 
   const lines = list?.lines ?? [];
 
@@ -145,6 +159,7 @@ export default function OrdersPage() {
 
   return (
     <AppShell active="Order list">
+      {gate.modal}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <h1 className="text-[22px] font-semibold tracking-tight text-ink">Order list</h1>

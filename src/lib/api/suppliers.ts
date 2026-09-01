@@ -26,6 +26,16 @@ export interface SupplierAccount {
   passwordSet: boolean;
   /** Env var names an operator would edit, so the fix is findable. */
   configuredBy: string[];
+  /**
+   * This is a SHARED diagnostic account, not one this person connected.
+   *
+   * Set for administrators, who read suppliers on the `.env` credentials. The
+   * page shows their state and offers no controls: there is nothing here for an
+   * admin to change, and a Connect button would invite them to replace an
+   * account that is not theirs.
+   */
+  shared?: boolean;
+  connected?: boolean;
 }
 
 export interface SupplierConnection {

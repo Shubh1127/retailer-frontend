@@ -52,6 +52,7 @@ import AppShell from "@/components/AppShell";
 import MobileScanner from "@/components/MobileScanner";
 import ScanCard from "@/components/ScanProductCard";
 import { useIsMobile } from "@/lib/useMediaQuery";
+import { useSupplierGate } from "@/components/SupplierGate";
 import ProductGlyph from "@/components/ProductGlyph";
 import Pagination, { usePagination } from "@/components/Pagination";
 import { ApiError } from "@/lib/api/client";
@@ -64,6 +65,7 @@ import {
   type Keystroke,
 } from "@/lib/scannerInput";
 import { createCameraScanStream } from "@/lib/cameraScanStream";
+import { createBarcodeReader, type BarcodeReader } from "@/lib/barcodeDetector";
 import {
   clearScanCart,
   discoverScanLine,
@@ -140,6 +142,13 @@ export default function ScanPage() {
    * component has to know which one it is.
    */
   const isMobile = useIsMobile();
+
+  /**
+   * A scan that has nowhere to ask is a scan that comes back empty, and an
+   * empty result reads as "we do not stock this" rather than "you have not
+   * connected an account". Checked before the barcode goes anywhere.
+   */
+  const gate = useSupplierGate();
 
   /**
    * `/scan?camera=1` — arriving from the tab bar's Scan button.
@@ -391,17 +400,11 @@ export default function ScanPage() {
     let timer: ReturnType<typeof setInterval> | null = null;
 
     void (async () => {
-      // Feature-detected rather than assumed: BarcodeDetector is Chromium-only
-      // today, and a camera that opens and never decodes is worse than a clear
-      // message saying to use a handheld scanner instead.
-      const Detector = (window as unknown as { BarcodeDetector?: any }).BarcodeDetector;
-      if (!Detector) {
-        setCameraError(
-          "This browser cannot decode barcodes from the camera. Use a handheld scanner — it types into the box above and works everywhere.",
-        );
-        setCameraOn(false);
-        return;
-      }
+      // Native `BarcodeDetector` where the browser has one, a WebAssembly
+      // reader where it does not — see `@/lib/barcodeDetector`. Started before
+      // the permission prompt so the two overlap.
+      const readerPromise = createBarcodeReader();
+      readerPromise.catch(() => {});
 
       try {
         const stream = await navigator.mediaDevices.getUserMedia({
@@ -420,23 +423,33 @@ export default function ScanPage() {
           await videoRef.current.play();
         }
 
-        const detector = new Detector({
-          formats: ["ean_13", "ean_8", "upc_a", "upc_e", "code_128", "itf"],
-        });
+        let detector: BarcodeReader;
+        try {
+          detector = await readerPromise;
+        } catch {
+          setCameraError(
+            "The barcode reader could not be loaded. Use a handheld scanner — it types into the box above and works everywhere.",
+          );
+          setCameraOn(false);
+          return;
+        }
+        if (cancelled) return;
+
+        // One decode at a time: the wasm reader can take longer than a tick,
+        // and a skipped tick is not the same fact as a frame that saw nothing.
+        let decoding = false;
 
         timer = setInterval(() => {
           void (async () => {
             if (!videoRef.current || videoRef.current.readyState < 2) return;
+            if (decoding) return;
 
-            let raw: string[] = [];
+            decoding = true;
+            let raw: string[];
             try {
-              const found = await detector.detect(videoRef.current);
-              raw = found
-                .map((result: { rawValue?: unknown }) => String(result?.rawValue ?? ""))
-                .filter((value: string) => value !== "");
-            } catch {
-              // A single failed frame is normal — motion blur, bad light. The
-              // next tick tries again; reporting it would be constant noise.
+              raw = await detector.detect(videoRef.current);
+            } finally {
+              decoding = false;
             }
 
             /**
@@ -711,6 +724,8 @@ export default function ScanPage() {
         <form
           onSubmit={(event) => {
             event.preventDefault();
+            // Nothing is recorded, looked up or sent when the gate refuses.
+            if (!gate.guard()) return;
             void submitCode(typed);
             setTyped("");
           }}
@@ -913,6 +928,8 @@ export default function ScanPage() {
 
         <Pagination paged={paged} label="lines" />
       </div>
+
+      {gate.modal}
 
       {/* Phones only. Everything it needs — the cart, the duplicate rules, the
           optimistic quantity writes — already lives on this page, so it is

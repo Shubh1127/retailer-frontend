@@ -33,6 +33,8 @@ import {
   setQuantity,
   supportsCart,
   cartSupplierLabel as label,
+  displaySupplierId,
+  supplierLabel,
   validateBasket,
   CART_SUPPLIERS,
   VerificationRequiredError,
@@ -174,10 +176,12 @@ function retailerMessage(raw: string, supplier: string): string {
 
   if (/sign in|session|unauthor|401/i.test(raw)) return raw;
 
-  return (
-    `${label(supplier)} could not be reached, so its basket is not shown. ` +
-    'Nothing is wrong with your order — try again in a moment.'
-  );
+  // THE NAME IS NOT REPEATED HERE. Every render site already prefixes the
+  // supplier, so putting it in the message too produced "Barry Group · Ambient:
+  // Barry Group · Ambient could not be reached, so its basket is not shown.
+  // Nothing is wrong with your order — try again in a moment." — the name
+  // twice, then two sentences of reassurance, for one fact and one button.
+  return 'could not be reached.';
 }
 
 export function useCart(jobId?: string): CartState {
@@ -1073,6 +1077,25 @@ export function CartBar({
 
   const activeSuppliers = [...bySupplier.keys()];
 
+  /**
+   * Unreachable suppliers, collapsed to ONE entry per wholesaler.
+   *
+   * Barry is one site with two baskets. When it is down both fail, always, for
+   * the same reason — so reporting them separately produced two identical red
+   * panels naming "Barry Group · Ambient" and "Barry Group · Chill", which reads
+   * as two outages and offers two buttons that do the same thing. Grouped on the
+   * display id, the same collapse the price columns already use.
+   */
+  const failedVendors = useMemo(() => {
+    const groups = new Map<string, CartSupplier[]>();
+    for (const supplier of SUPPLIERS) {
+      if (!cart.errors[supplier]) continue;
+      const displayId = displaySupplierId(supplier);
+      groups.set(displayId, [...(groups.get(displayId) ?? []), supplier]);
+    }
+    return [...groups.entries()].map(([displayId, suppliers]) => ({ displayId, suppliers }));
+  }, [cart.errors]);
+
   return (
     <>
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-line bg-surface px-4 py-3">
@@ -1264,20 +1287,31 @@ export function CartBar({
         ),
       )}
 
-      {/* Reported per supplier and named, so "the cart is broken" is never the
-          takeaway when only one of two is. */}
-      {SUPPLIERS.filter((supplier) => cart.errors[supplier]).map((supplier) => (
+      {/* Reported per VENDOR and named, so "the cart is broken" is never the
+          takeaway when only one of two is — but Barry's two baskets are one
+          wholesaler being unreachable, not two. When the site is down, ambient
+          and chill fail together and always will: they are the same host behind
+          the same block. Two identical red panels for one outage read as twice
+          as much broken, and the retailer cannot act on either of them
+          separately. Collapsed on the DISPLAY id, exactly as the price columns
+          are, so one unreachable vendor is one message. */}
+      {failedVendors.map(({ displayId, suppliers: group }) => (
         <div
-          key={supplier}
+          key={displayId}
           className="mb-3 rounded-lg border border-red-200 bg-red-50 px-4 py-2.5 text-[13px] text-red-700"
         >
-          <strong className="font-medium">{label(supplier)}</strong>:{" "}
-          {cart.errors[supplier]}
+          <strong className="font-medium">{supplierLabel(displayId)}</strong>:{" "}
+          {cart.errors[group[0]!]}
           {/* Retries are exhausted, so nothing further happens on its own.
-              A way to try again beats telling the buyer to reload the page. */}
+              A way to try again beats telling the buyer to reload the page.
+              Retries EVERY basket behind the name, because the button promises
+              what the name says — one Barry Group, not whichever half of it
+              happened to be first in the list. */}
           <button
             type="button"
-            onClick={() => void cart.refresh(supplier)}
+            onClick={() => {
+              for (const supplier of group) void cart.refresh(supplier);
+            }}
             className="ml-2 underline hover:no-underline"
           >
             Try again

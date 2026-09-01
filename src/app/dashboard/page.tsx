@@ -613,9 +613,19 @@ export default function DashboardPage() {
   const [sortDirection, setSortDirection] = useState<1 | -1>(1);
   const [openRow, setOpenRow] = useState<ReadyToOrderRow | null>(null);
 
-  // The supplier basket, read on mount. A row says "In Cart" because Musgrave
-  // holds it, never because this page remembers putting it there.
-  const cart = useCart();
+  /**
+   * The supplier basket, read on mount. A row says "In Cart" because Musgrave
+   * holds it, never because this page remembers putting it there.
+   *
+   * THE JOB ID IS NOT DECORATION. Every add from this table posts to the cart
+   * route, and the route records which JOB a line came from — which is what
+   * permanently locks that job from further admin editing once something has
+   * been ordered from it. Called without one, this page's adds were anonymous:
+   * the retailer's own job page passed it and the dashboard did not, so the
+   * primary add path — watching a job stream in and ordering from it here —
+   * left no durable evidence at all.
+   */
+  const cart = useCart(job?.jobId);
 
   // Derived from ALL ready rows, not the filtered view — the columns must not
   // appear and disappear as somebody types in the search box.

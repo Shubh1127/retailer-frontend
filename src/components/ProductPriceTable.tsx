@@ -43,6 +43,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import ProductGlyph from "@/components/ProductGlyph";
+import { useSupplierGate } from "@/components/SupplierGate";
 import { ApiError } from "@/lib/api/client";
 import {
   addItems,
@@ -303,6 +304,23 @@ function OfferPrice({
         <div className={`nums font-medium ${isBest ? "text-good-600" : "text-ink"}`}>
           {eur(offer.livePrice)}
         </div>
+      ) : offer.status === "not-connected" ? (
+        /**
+         * A SETTING, NOT AN OUTAGE.
+         *
+         * This used to render as "unavailable", whose tooltip says the
+         * wholesaler could not be reached and explicitly says nothing about
+         * stock — so a retailer who simply had not connected an account was
+         * told four suppliers were down, and pointed away from the one thing
+         * they could fix.
+         */
+        <a
+          href="/suppliers"
+          title={`You have not connected a ${cartSupplierLabel(supplierId)} account yet.`}
+          className="text-[11.5px] text-link hover:underline"
+        >
+          not connected
+        </a>
       ) : offer.status === "unavailable" ? (
         // WE COULD NOT ASK. Says nothing about stock.
         //
@@ -607,6 +625,10 @@ export default function ProductPriceTable({
   products: readonly SupplierSearchProduct[];
   emptyMessage?: string;
 }) {
+  // Shared by /product-search and the dashboard's quick search, so gating here
+  // covers both without either page having to remember to.
+  const gate = useSupplierGate();
+
   const [prices, setPrices] = useState<
     Map<
       string,
@@ -793,6 +815,18 @@ export default function ProductPriceTable({
     );
 
   const fetchPrices = async () => {
+    /**
+     * NOTHING IS ASKED IF THERE IS NOBODY TO ASK.
+     *
+     * This is the third door into supplier contact, after scanning and sending
+     * an order list, and it was the one left unguarded — so a retailer with no
+     * connected account pressed Fetch live prices, waited, and got "unavailable"
+     * against every supplier. That message means the wholesaler could not be
+     * reached and explicitly says nothing about stock, which is the wrong
+     * explanation for the one problem they can actually fix.
+     */
+    if (!gate.guard()) return;
+
     // Exactly the supplier/SKU pairs our own data named. Nothing speculative,
     // and never more than the account's budget for one press.
     const items: { supplierId: string; sku: string }[] = [];
@@ -1024,6 +1058,8 @@ export default function ProductPriceTable({
 
   return (
     <div>
+      {gate.modal}
+
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-line px-4 py-2.5">
         <p className="text-[12px] text-ink-soft">
           {pricedAt ? (

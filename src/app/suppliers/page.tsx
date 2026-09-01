@@ -1,35 +1,47 @@
 "use client";
 
 /**
- * Suppliers — the shop's trade accounts, what each can do, and how it buys.
+ * Suppliers — the shop's own trade accounts, and the rules comparison buys by.
  *
- * WHY NO PASSWORDS ARE SHOWN
+ * TWO SECTIONS, BECAUSE THEY ARE TWO DIFFERENT THINGS
  *
- * The card names the account the app logs in as, and says whether a password is
- * configured. It never shows the password, because the backend never sends one:
- * a supplier password buys stock on the shop's credit, and putting it in an API
- * response puts it in the network tab and in every proxy between here and the
- * server, to display a field nobody can act on from this screen.
+ *   Trade accounts   one card per LOGIN. What the retailer connected, whether
+ *                    it works, and how to change it.
+ *   Buying rules     one card per COMMERCIAL SUPPLIER — thresholds, minimums,
+ *                    delivery — which is a different list.
  *
- * Everything an operator actually needs is here instead — which account, by
- * what method, and the exact setting names to change if it is wrong.
+ * They are different lists because Barry Group is ONE login and TWO baskets.
+ * Ambient and chill have their own delivery days and their own minimums, so
+ * allocation genuinely needs them apart; a retailer typing a password does not,
+ * and asking for it twice would give them two places for one credential to
+ * drift out of step. Splitting the page this way is what keeps both facts true
+ * at once.
+ *
+ * NO PASSWORD IS EVER SHOWN, because none is ever sent. The status says whether
+ * one is stored and whether it has been proven to work — which is what somebody
+ * looking at this page is actually asking.
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
 
 import AppShell from "@/components/AppShell";
+import SupplierConnectForm, {
+  StatusPill,
+  credentialStatus,
+  type ConnectOutcome,
+} from "@/components/SupplierConnectForm";
+import { ApiError } from "@/lib/api/client";
 import { eur } from "@/lib/api/jobs";
 import {
-  connectionStatus,
-  getSupplierConnections,
-  type SupplierConnection,
-} from "@/lib/api/suppliers";
-
-const TONE: Record<"ok" | "warn" | "idle", string> = {
-  ok: "border-emerald-200 bg-emerald-50 text-emerald-700",
-  warn: "border-amber-200 bg-amber-50 text-amber-700",
-  idle: "border-line bg-canvas text-ink-faint",
-};
+  disconnectSupplier,
+  getOnboardingState,
+  listSupplierCredentials,
+  testSupplierConnection,
+  type ConnectableSupplier,
+  type SupplierCredential,
+} from "@/lib/api/supplierCredentials";
+import { getSupplierConnections, type SupplierConnection } from "@/lib/api/suppliers";
 
 function Capability({ on, label }: { on: boolean; label: string }) {
   return (
@@ -53,15 +65,51 @@ function Fact({ label, value }: { label: string; value: string }) {
 }
 
 export default function SuppliersPage() {
-  const [suppliers, setSuppliers] = useState<SupplierConnection[] | null>(null);
+  const [connectable, setConnectable] = useState<ConnectableSupplier[]>([]);
+  const [credentials, setCredentials] = useState<SupplierCredential[]>([]);
+  const [rules, setRules] = useState<SupplierConnection[]>([]);
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * This account reads suppliers on the SHARED diagnostic credentials.
+   *
+   * True for administrators. They connect nothing of their own, so the page
+   * shows what the shared accounts are and offers no Connect, Update or
+   * Disconnect — none of those would be theirs to press.
+   */
+  const [sharedAccounts, setSharedAccounts] = useState(false);
+
+  const [openId, setOpenId] = useState<string | null>(null);
+  /** Which supplier has a request in flight, so its buttons can be disabled. */
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [tested, setTested] = useState<Record<string, { ok: boolean; error?: string }>>({});
 
   const load = useCallback(async () => {
     try {
-      setSuppliers(await getSupplierConnections());
+      const [onboarding, stored, buying] = await Promise.all([
+        getOnboardingState(),
+        listSupplierCredentials(),
+        getSupplierConnections(),
+      ]);
+      setConnectable(onboarding.connectable);
+      setCredentials(stored);
+      setRules(buying);
+      setSharedAccounts(onboarding.usesSharedAccounts === true);
       setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load suppliers");
+      setStatus("ready");
+    } catch (cause) {
+      // Distinguished: an expired session is fixed by signing in, a network
+      // failure by trying again, and telling somebody the wrong one wastes
+      // their time.
+      if (cause instanceof ApiError && cause.status === 401) {
+        setError("Your session has expired. Please sign in again.");
+      } else if (cause instanceof ApiError) {
+        setError(cause.message);
+      } else {
+        setError("Could not reach the server. Check your connection and try again.");
+      }
+      setStatus("error");
     }
   }, []);
 
@@ -69,150 +117,358 @@ export default function SuppliersPage() {
     void load();
   }, [load]);
 
+  const credentialFor = (supplierId: string): SupplierCredential | undefined =>
+    credentials.find((entry) => entry.supplierId === supplierId);
+
+  const onConnected = (supplierId: string, outcome: ConnectOutcome) => {
+    setCredentials((current) => [
+      ...current.filter((entry) => entry.supplierId !== supplierId),
+      outcome.connection,
+    ]);
+    setTested((current) => ({ ...current, [supplierId]: outcome.tested }));
+    setOpenId(null);
+  };
+
+  /**
+   * Log in for real, because somebody asked.
+   *
+   * NEVER ON LOAD and never for every supplier at once — this is a genuine
+   * request to a trade account that can rate-limit or lock.
+   */
+  const runTest = async (supplierId: string) => {
+    if (busyId) return;
+    setBusyId(supplierId);
+    try {
+      const result = await testSupplierConnection(supplierId);
+      setTested((current) => ({
+        ...current,
+        [supplierId]: { ok: result.ok, ...(result.error ? { error: result.error } : {}) },
+      }));
+      if (result.connection) {
+        setCredentials((current) => [
+          ...current.filter((entry) => entry.supplierId !== supplierId),
+          result.connection!,
+        ]);
+      }
+    } catch (cause) {
+      setTested((current) => ({
+        ...current,
+        [supplierId]: {
+          ok: false,
+          error:
+            cause instanceof ApiError && cause.status === 401
+              ? "Your session has expired. Please sign in again."
+              : "Could not reach the server.",
+        },
+      }));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const runDisconnect = async (supplierId: string, name: string) => {
+    if (busyId) return;
+    // A real order path is being removed; a stray click should not do it.
+    if (!window.confirm(`Disconnect your ${name} account? Orders will stop going to it.`)) {
+      return;
+    }
+
+    setBusyId(supplierId);
+    try {
+      await disconnectSupplier(supplierId);
+      setCredentials((current) => current.filter((entry) => entry.supplierId !== supplierId));
+      setTested((current) => {
+        const next = { ...current };
+        delete next[supplierId];
+        return next;
+      });
+    } catch (cause) {
+      setTested((current) => ({
+        ...current,
+        [supplierId]: {
+          ok: false,
+          error: cause instanceof ApiError ? cause.message : "Could not disconnect.",
+        },
+      }));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
   return (
     <AppShell active="Suppliers">
-      <div className="flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-[22px] font-semibold tracking-tight text-ink">Suppliers</h1>
-          <p className="mt-1 text-[13.5px] text-ink-soft">
-            Your trade accounts, what each connection can do, and the buying rules
-            comparison uses.
-          </p>
-        </div>
+      <div>
+        <h1 className="text-[22px] font-semibold tracking-tight text-ink">Suppliers</h1>
+        <p className="mt-1 text-[13.5px] text-ink-soft">
+          Your trade accounts, and the buying rules comparison uses.
+        </p>
       </div>
 
-      {error && (
+      {status === "error" && (
         <div className="mt-5 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[13px] text-red-700">
           {error}
+          <button
+            type="button"
+            onClick={() => {
+              setStatus("loading");
+              void load();
+            }}
+            className="ml-2 underline hover:no-underline"
+          >
+            Try again
+          </button>
         </div>
       )}
 
-      {suppliers === null && !error && (
-        <p className="mt-6 text-[13px] text-ink-soft">Loading…</p>
+      {status === "loading" && (
+        <div className="mt-6 space-y-3">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="h-24 animate-pulse rounded-xl border border-line bg-canvas" />
+          ))}
+        </div>
       )}
 
-      <div className="mt-6 grid gap-4 lg:grid-cols-2">
-        {(suppliers ?? []).map((supplier) => {
-          const status = connectionStatus(supplier);
-          const account = supplier.account;
+      {status === "ready" && (
+        <>
+          {/* ---- Trade accounts: ONE CARD PER LOGIN ----------------------
+              HIDDEN ENTIRELY FOR AN ADMINISTRATOR.
 
-          return (
-            <div
-              key={supplier.supplierId}
-              className="rounded-xl border border-line bg-surface p-5 shadow-card"
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-[14.5px] font-semibold text-ink">{supplier.name}</p>
-                  <p className="text-[12px] text-ink-soft">{supplier.channel}</p>
-                </div>
-                <div className="flex shrink-0 flex-col items-end gap-1">
-                  <span
-                    className={`rounded-md border px-2 py-0.5 text-[11.5px] font-medium ${TONE[status.tone]}`}
-                  >
-                    {status.label}
-                  </span>
+              There is nothing here for them. They connect no accounts of their
+              own — supplier reads run on the shared `.env` credentials — so the
+              whole section would be four cards offering to connect, update or
+              disconnect logins that are configured on the server and are not
+              theirs to change. Showing it read-only was still showing it; the
+              honest answer is that this section is about a retailer's own trade
+              accounts, and an admin has none. */}
+          {!sharedAccounts && (
+          <>
+          <h2 className="mt-7 text-[15px] font-semibold text-ink">Trade accounts</h2>
+          <p className="mt-0.5 text-[12.5px] text-ink-soft">
+            We sign in as you to read your prices and fill your baskets. Passwords are
+            stored encrypted and never shown here.
+          </p>
+
+          <div className="mt-4 grid gap-3 lg:grid-cols-2">
+            {connectable.map((supplier) => {
+              const credential = credentialFor(supplier.supplierId);
+              const state = credentialStatus(credential);
+              const isOpen = openId === supplier.supplierId;
+              const busy = busyId === supplier.supplierId;
+              const result = tested[supplier.supplierId];
+
+              return (
+                <section
+                  key={supplier.supplierId}
+                  className="rounded-xl border border-line bg-surface p-4 shadow-card"
+                >
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-[14.5px] font-semibold text-ink">{supplier.name}</p>
+                      {credential?.username ? (
+                        <p className="mt-0.5 break-all font-mono text-[12.5px] text-ink-soft">
+                          {credential.username}
+                        </p>
+                      ) : sharedAccounts ? (
+                        <p className="mt-0.5 text-[12.5px] text-ink-soft">
+                          Shared diagnostic account
+                        </p>
+                      ) : (
+                        <p className="mt-0.5 text-[12.5px] text-ink-faint">No account connected</p>
+                      )}
+                    </div>
+                    {sharedAccounts && !credential ? (
+                      <span className="inline-flex shrink-0 items-center rounded border border-line bg-canvas px-2 py-0.5 text-[11.5px] font-medium text-ink-soft">
+                        Shared
+                      </span>
+                    ) : (
+                      <StatusPill {...(credential ? { credential } : {})} />
+                    )}
+                  </div>
+
+                  {/* The detail behind the pill — including, for an unreadable
+                      secret, a message about OUR configuration rather than
+                      their password. */}
+                  {state.detail && (
+                    <p
+                      className={`mt-2 text-[12px] ${
+                        state.tone === "bad" ? "text-red-700" : "text-ink-soft"
+                      }`}
+                    >
+                      {state.detail}
+                    </p>
+                  )}
+
+                  <AnimatePresence>
+                    {result && (
+                      <motion.p
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className={`mt-2 overflow-hidden rounded-md px-3 py-2 text-[12.5px] ${
+                          result.ok ? "bg-emerald-50 text-emerald-700" : "bg-red-50 text-red-700"
+                        }`}
+                      >
+                        {result.ok
+                          ? `Signed in to ${supplier.name} successfully.`
+                          : `${supplier.name} refused the sign-in${result.error ? `: ${result.error}` : "."}`}
+                      </motion.p>
+                    )}
+                  </AnimatePresence>
+
+                  {/* NOTHING TO PRESS ON A SHARED ACCOUNT. It is configured on
+                      the server and is not this person's to change; a Connect
+                      button here would offer to replace somebody else's login. */}
+                  {sharedAccounts && !credential ? (
+                    <p className="mt-3 text-[12px] text-ink-faint">
+                      Configured on the server. Retailers connect their own accounts here.
+                    </p>
+                  ) : (
+                  <AnimatePresence initial={false}>
+                    {isOpen ? (
+                      <motion.div
+                        key="form"
+                        initial={{ opacity: 0, height: 0 }}
+                        animate={{ opacity: 1, height: "auto" }}
+                        exit={{ opacity: 0, height: 0 }}
+                        className="overflow-hidden"
+                      >
+                        <SupplierConnectForm
+                          supplierId={supplier.supplierId}
+                          supplierName={supplier.name}
+                          {...(credential ? { existing: credential } : {})}
+                          onConnected={(outcome) => onConnected(supplier.supplierId, outcome)}
+                          onCancel={() => setOpenId(null)}
+                        />
+                      </motion.div>
+                    ) : (
+                      <div key="actions" className="mt-3 flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setOpenId(supplier.supplierId)}
+                          disabled={busy}
+                          className="rounded-md border border-teal-600 px-3 py-1.5 text-[12.5px] font-medium text-teal-700 hover:bg-teal-50 disabled:opacity-40"
+                        >
+                          {credential?.secretSet ? "Update password" : "Connect"}
+                        </button>
+
+                        {credential?.secretSet && (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void runTest(supplier.supplierId)}
+                              disabled={busy}
+                              className="rounded-md border border-line px-3 py-1.5 text-[12.5px] font-medium text-ink-soft hover:bg-canvas hover:text-ink disabled:opacity-40"
+                            >
+                              {busy ? "Checking…" : "Test connection"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void runDisconnect(supplier.supplierId, supplier.name)}
+                              disabled={busy}
+                              className="rounded-md border border-line px-3 py-1.5 text-[12.5px] font-medium text-ink-soft hover:bg-red-50 hover:text-red-700 disabled:opacity-40"
+                            >
+                              Disconnect
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </AnimatePresence>
+                  )}
+                </section>
+              );
+            })}
+          </div>
+
+          </>
+          )}
+
+          {/* What an admin gets instead: one line saying where the accounts
+              live, with nothing to press. */}
+          {sharedAccounts && (
+            <p className="mt-7 rounded-xl border border-line bg-canvas px-4 py-3 text-[12.5px] text-ink-soft">
+              You are signed in as an administrator. Supplier reads use the shared
+              diagnostic accounts configured on the server, so there are no trade
+              accounts to connect here. Retailers connect their own.
+            </p>
+          )}
+
+          {/* ---- Buying rules: one card per commercial supplier ---------- */}
+          <h2 className="mt-8 text-[15px] font-semibold text-ink">Buying rules</h2>
+          <p className="mt-0.5 text-[12.5px] text-ink-soft">
+            How comparison decides between suppliers. Barry Group appears twice here —
+            ambient and chill are separate orders with their own minimums — but they share
+            the single login above.
+          </p>
+
+          <div className="mt-4 grid gap-4 lg:grid-cols-2">
+            {rules.map((supplier) => (
+              <div
+                key={supplier.supplierId}
+                className="rounded-xl border border-line bg-surface p-5 shadow-card"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-[14.5px] font-semibold text-ink">{supplier.name}</p>
+                    <p className="text-[12px] text-ink-soft">{supplier.channel}</p>
+                  </div>
                   {supplier.isMain && (
-                    <span className="rounded-md border border-teal-500/20 bg-teal-50 px-2 py-0.5 text-[11.5px] font-medium text-link">
+                    <span className="shrink-0 rounded-md border border-teal-500/20 bg-teal-50 px-2 py-0.5 text-[11.5px] font-medium text-link">
                       Main supplier
                     </span>
                   )}
                 </div>
-              </div>
 
-              {/* ---- Account ------------------------------------------- */}
-              <div className="mt-4 rounded-lg border border-line bg-canvas px-3.5 py-3">
-                <div className="flex flex-wrap items-baseline justify-between gap-2">
-                  <span className="text-[11px] uppercase tracking-wide text-ink-faint">
-                    Trade account
-                  </span>
-                  {account.configured && (
-                    <span className="text-[11.5px] text-ink-faint">
-                      {account.method === "credentials"
-                        ? "Username and password"
-                        : "Pasted browser session"}
-                    </span>
-                  )}
+                {supplier.vendorNote && (
+                  <p className="mt-2 text-[11.5px] text-ink-soft">{supplier.vendorNote}</p>
+                )}
+
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  <Capability on={supplier.capabilities.search} label="Live search" />
+                  <Capability on={supplier.capabilities.cart} label="Add to basket" />
+                  <Capability on={supplier.capabilities.catalogue} label="Synced catalogue" />
                 </div>
 
-                {account.username ? (
-                  <p className="mt-1 break-all font-mono text-[13px] text-ink">
-                    {account.username}
-                  </p>
-                ) : (
-                  <p className="mt-1 text-[13px] text-ink-soft">
-                    {account.configured
-                      ? "Signed in with a pasted session — no username stored."
-                      : "No account configured."}
-                  </p>
-                )}
+                <div className="mt-4 grid grid-cols-3 gap-3 border-t border-line pt-4 text-center">
+                  <Fact
+                    label="Compare threshold"
+                    value={`${Math.round(supplier.thresholdPct * 100)}%`}
+                  />
+                  {/* "NOT PUBLISHED" IS NOT "NONE".
+                      Two of these wholesalers state a minimum — Kadona €1,000,
+                      Musgrave €150 — and the rest publish nothing. Rendering
+                      the absence as "None" asserted a fact nobody has told us,
+                      and a buyer building a small order off that would find out
+                      at the supplier's checkout. */}
+                  <Fact
+                    label="Minimum order"
+                    value={
+                      supplier.minOrderValue > 0 ? eur(supplier.minOrderValue) : "Not published"
+                    }
+                  />
+                  <Fact
+                    label="Delivery"
+                    value={supplier.deliveryFee > 0 ? eur(supplier.deliveryFee) : "Free"}
+                  />
+                </div>
 
-                <p className="mt-1.5 text-[11.5px] text-ink-soft">
-                  {/* The password is never sent to this page. Saying so beats a
-                      row of dots, which implies a value is here that is not. */}
-                  Password{" "}
-                  {account.passwordSet ? (
-                    <span className="text-emerald-700">set</span>
-                  ) : (
-                    <span className="text-amber-700">not set</span>
-                  )}{" "}
-                  — held on the server and never shown here.
-                </p>
-
-                {account.method === "session-cookie" && (
-                  <p className="mt-1.5 text-[11.5px] text-amber-700">
-                    A pasted session expires and cannot renew itself, so a long
-                    sync can stop partway. Adding a username and password makes it
-                    self-healing.
-                  </p>
-                )}
-
-                {!account.configured && account.configuredBy.length > 0 && (
-                  <p className="mt-1.5 text-[11.5px] text-ink-faint">
-                    Set{" "}
-                    <span className="font-mono">{account.configuredBy.join(", ")}</span>{" "}
-                    on the server to connect.
-                  </p>
-                )}
+                {/* A DELIVERY THRESHOLD, kept well away from the minimum
+                    beside it. O'Reilly's €35 is the order value at which
+                    carriage stops being charged — not a floor below which they
+                    refuse to sell, which is what the Minimum order column
+                    means. Reading one as the other is how a €30 basket gets
+                    moved to a dearer wholesaler for no reason. */}
+                {supplier.freeDeliveryThreshold !== undefined &&
+                  supplier.freeDeliveryThreshold > 0 && (
+                    <p className="mt-2 text-center text-[11.5px] text-ink-soft">
+                      Free delivery over {eur(supplier.freeDeliveryThreshold)}
+                    </p>
+                  )}
               </div>
-
-              {supplier.vendorNote && (
-                <p className="mt-2 text-[11.5px] text-ink-soft">{supplier.vendorNote}</p>
-              )}
-
-              {/* ---- What the connection can do ------------------------ */}
-              <div className="mt-3 flex flex-wrap gap-1.5">
-                <Capability on={supplier.capabilities.search} label="Live search" />
-                <Capability on={supplier.capabilities.cart} label="Add to basket" />
-                <Capability on={supplier.capabilities.catalogue} label="Synced catalogue" />
-              </div>
-
-              {/* ---- Buying rules -------------------------------------- */}
-              <div className="mt-4 grid grid-cols-3 gap-3 border-t border-line pt-4 text-center">
-                <Fact
-                  label="Compare threshold"
-                  value={`${Math.round(supplier.thresholdPct * 100)}%`}
-                />
-                <Fact
-                  label="Minimum order"
-                  value={supplier.minOrderValue > 0 ? eur(supplier.minOrderValue) : "None"}
-                />
-                <Fact
-                  label="Delivery"
-                  value={supplier.deliveryFee > 0 ? eur(supplier.deliveryFee) : "Free"}
-                />
-              </div>
-
-              {supplier.freeDeliveryThreshold !== undefined &&
-                supplier.freeDeliveryThreshold > 0 && (
-                  <p className="mt-2 text-center text-[11.5px] text-ink-soft">
-                    Free delivery over {eur(supplier.freeDeliveryThreshold)}
-                  </p>
-                )}
-            </div>
-          );
-        })}
-      </div>
+            ))}
+          </div>
+        </>
+      )}
     </AppShell>
   );
 }
