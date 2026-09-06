@@ -25,6 +25,7 @@ export type NavIconName =
   | "list"
   | "basket"
   | "store"
+  | "desktop"
   | "user";
 
 const PATHS: Record<NavIconName, React.ReactNode> = {
@@ -79,6 +80,14 @@ const PATHS: Record<NavIconName, React.ReactNode> = {
       <path d="M3 9.5 4.8 5a1 1 0 0 1 .9-.6h12.6a1 1 0 0 1 .9.6L21 9.5" />
       <path d="M3 9.5h18" />
       <path d="M9.5 20v-5h5v5" />
+    </>
+  ),
+  /** A monitor on a stand — the PC app, not a phone and not a window. */
+  desktop: (
+    <>
+      <rect x="3" y="4.5" width="18" height="12" rx="1.5" />
+      <path d="M9.5 20h5" />
+      <path d="M12 16.5V20" />
     </>
   ),
   user: (

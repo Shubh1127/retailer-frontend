@@ -37,6 +37,7 @@ import {
   supplierLabel,
   validateBasket,
   CART_SUPPLIERS,
+  SupplierNotConnectedError,
   VerificationRequiredError,
   type AddProductsResult,
   type AddResult,
@@ -136,17 +137,31 @@ const RETRY_DELAYS_MS = [2_000, 5_000, 12_000];
 /**
  * Whether this supplier's basket is known well enough to add to it.
  *
- *   loading       first read in flight
- *   ready         we have a basket and it is current
- *   reconnecting  a read failed and another attempt is scheduled
- *   unavailable   retries exhausted; the basket state is unknown
+ *   loading        first read in flight
+ *   ready          we have a basket and it is current
+ *   reconnecting   a read failed and another attempt is scheduled
+ *   unavailable    retries exhausted; the basket state is unknown
+ *   not-connected  this shop has no account here, so there is no basket
  *
  * The distinction that matters is `ready` versus everything else. Adding to a
  * basket we could not read risks duplicating lines a buyer already has — the
  * backend refuses to report an unread O'Reilly basket as empty precisely so
  * this decision can be made honestly here.
+ *
+ * `not-connected` IS ON THE SAME SIDE OF THAT LINE and is still separate from
+ * the other two, because it is the only one that is not a failure. There is
+ * nothing to retry and nothing to wait for: it is a setting, the retailer can
+ * change it, and it must not be dressed as an outage. It used to arrive as a
+ * failed read, so a shop with one wholesaler connected was shown three amber
+ * panels saying sessions had expired and were being reconnected — for accounts
+ * that had never existed.
  */
-export type BasketStatus = "loading" | "ready" | "reconnecting" | "unavailable";
+export type BasketStatus =
+  | "loading"
+  | "ready"
+  | "reconnecting"
+  | "unavailable"
+  | "not-connected";
 
 /**
  * What a retailer is told when a supplier's basket cannot be read.
@@ -228,6 +243,20 @@ export function useCart(jobId?: string): CartState {
       setErrors((current) => ({ ...current, [supplier]: null }));
       setStatus((current) => ({ ...current, [supplier]: "ready" }));
     } catch (err) {
+      /**
+       * NO RETRY, NO ERROR, NO BACKOFF. A supplier this shop never connected
+       * will not become connected by asking again in two seconds; the retry
+       * ladder here exists for a wholesaler that did not answer, which is a
+       * different thing. Each unconnected supplier was costing four requests
+       * per refresh to reach the same answer it gave immediately.
+       */
+      if (err instanceof SupplierNotConnectedError) {
+        setStatus((current) => ({ ...current, [supplier]: "not-connected" }));
+        setErrors((current) => ({ ...current, [supplier]: null }));
+        setBaskets((current) => ({ ...current, [supplier]: null }));
+        return;
+      }
+
       const message =
         err instanceof Error ? err.message : "Could not read the basket";
       const delay = RETRY_DELAYS_MS[attempt];
@@ -598,17 +627,25 @@ export function CartCell({
           title={
             basketReady
               ? `Add ${cases} × ${row.product} to the ${label(supplier)} basket`
-              : basketStatus === "unavailable"
-                ? `The ${label(supplier)} basket could not be read, so its contents are unknown. Adding now could duplicate a line you already have.`
-                : `Connecting to ${label(supplier)}. The basket has to be read before anything can be added to it.`
+              : basketStatus === "not-connected"
+                ? // NOT A CONNECTION IN PROGRESS. The button used to say
+                  // "Connecting…" and promise the basket was being read, for a
+                  // wholesaler this shop has no account with — a wait that was
+                  // never going to end, in place of the one thing they could do.
+                  `You have not connected a ${label(supplier)} account. Connect one on the Suppliers page to order from them.`
+                : basketStatus === "unavailable"
+                  ? `The ${label(supplier)} basket could not be read, so its contents are unknown. Adding now could duplicate a line you already have.`
+                  : `Connecting to ${label(supplier)}. The basket has to be read before anything can be added to it.`
           }
         >
           {isBusy
             ? "Adding…"
             : !basketReady
-              ? basketStatus === "unavailable"
-                ? "Unavailable"
-                : "Connecting…"
+              ? basketStatus === "not-connected"
+                ? "Not connected"
+                : basketStatus === "unavailable"
+                  ? "Unavailable"
+                  : "Connecting…"
               : mobile
                 ? `＋ Add${cases > 1 ? ` ${cases}` : ""} to ${label(supplier)}`
                 : `＋ Add${cases > 1 ? ` ${cases}` : ""}`}
@@ -1086,6 +1123,23 @@ export function CartBar({
    * as two outages and offers two buttons that do the same thing. Grouped on the
    * display id, the same collapse the price columns already use.
    */
+  /**
+   * Wholesalers this shop has no account with, named once each.
+   *
+   * Collapsed on the display id for the same reason `failedVendors` is: Barry
+   * is one login and two baskets, and "Barry Group · Ambient, Barry Group ·
+   * Chill" in a list of things to go and connect describes one action twice.
+   */
+  const notConnectedVendors = useMemo(() => {
+    const seen: string[] = [];
+    for (const supplier of SUPPLIERS) {
+      if (cart.status[supplier] !== "not-connected") continue;
+      const displayId = displaySupplierId(supplier);
+      if (!seen.includes(displayId)) seen.push(displayId);
+    }
+    return seen;
+  }, [cart.status]);
+
   const failedVendors = useMemo(() => {
     const groups = new Map<string, CartSupplier[]>();
     for (const supplier of SUPPLIERS) {
@@ -1263,6 +1317,34 @@ export function CartBar({
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* NOT CONNECTED IS A SETTING, AND IT GETS ONE LINE.
+
+          Every other panel on this page is about something going wrong. This
+          one is not, so it does not look like the others: no amber, no red, no
+          "try again" — a sentence naming the wholesalers this shop has no
+          account with, and the link that changes that.
+
+          ONE LINE FOR ALL OF THEM, not one per supplier. A shop that has
+          connected one of four would otherwise get three stacked panels about
+          the same decision, which reads as three problems. Collapsed on the
+          display id so Barry's two baskets are named once, as everywhere else.
+
+          NOTHING AT ALL WHEN EVERYTHING IS CONNECTED, which is the common case
+          and deserves no furniture. */}
+      {notConnectedVendors.length > 0 && (
+        <div className="mb-3 rounded-lg border border-line bg-canvas px-4 py-2.5 text-[13px] text-ink-soft">
+          Not connected:{" "}
+          <span className="text-ink">
+            {notConnectedVendors.map((vendor) => supplierLabel(vendor)).join(", ")}
+          </span>
+          . Their prices and baskets are not shown.{" "}
+          <a href="/suppliers" className="text-link hover:underline">
+            Connect an account
+          </a>{" "}
+          to compare and order from them.
         </div>
       )}
 

@@ -138,15 +138,39 @@ async function request(
 }
 
 /** Read the body once, and prefer the backend's `error` over a bare status. */
+/**
+ * A supplier this shop has not connected an account for.
+ *
+ * A TYPE RATHER THAN A STRING TEST, because the two states it separates lead to
+ * opposite behaviour and were being confused: a basket that could not be READ
+ * is retried on a backoff and eventually reported as an outage, while a
+ * supplier that was never connected must not be retried at all — nothing is
+ * going to change — and is answered with a link to the Suppliers page.
+ *
+ * The cart used to see one 502 for both and chose the first, so a shop with one
+ * connected wholesaler was told the other three had expiring sessions being
+ * reconnected.
+ */
+export class SupplierNotConnectedError extends Error {
+  constructor(readonly supplier: string) {
+    super(`No account is connected for ${supplier}.`);
+    this.name = "SupplierNotConnectedError";
+  }
+}
+
 async function readOrThrow<T>(res: Response, what: string): Promise<T> {
   const text = await res.text();
   if (!res.ok) {
     let message = text || res.statusText;
+    let notConnected = false;
     try {
-      message = (JSON.parse(text) as { error?: string }).error ?? message;
+      const body = JSON.parse(text) as { error?: string; notConnected?: boolean };
+      message = body.error ?? message;
+      notConnected = body.notConnected === true;
     } catch {
       /* the raw text is the best we have */
     }
+    if (notConnected) throw new SupplierNotConnectedError(message);
     throw new Error(`${what}: ${message}`);
   }
   return (text ? JSON.parse(text) : undefined) as T;

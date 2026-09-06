@@ -332,6 +332,15 @@ export default function SettingsPage() {
                     label="Suppliers"
                     hint="Connections and their status"
                   />
+                  {/* The Windows build is installed on a PC, not on the phone
+                      reading this — but this list is the phone's only way to
+                      the pages the header holds, and a retailer who hears about
+                      the desktop app looks for it wherever they happen to be. */}
+                  <NavRow
+                    href="/desktop"
+                    label="Desktop app"
+                    hint="Download RetailCompare for Windows"
+                  />
                 </section>
 
                 {/* ---- Out ---- */}

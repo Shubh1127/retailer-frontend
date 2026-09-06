@@ -205,6 +205,17 @@ function AccountMenu({ me }: { me: MeResponse["user"] }) {
               <NavIcon name="store" size={15} />
               Suppliers
             </Link>
+            {/* Beside Baskets and Suppliers rather than out in the nav: it is
+                something a retailer does once, not one of the five things they
+                start every week. */}
+            <Link
+              href="/desktop"
+              onClick={close}
+              className="flex items-center gap-2 rounded-md px-2 py-1.5 text-[12.5px] text-ink-soft hover:bg-canvas hover:text-ink"
+            >
+              <NavIcon name="desktop" size={15} />
+              Desktop app
+            </Link>
           </div>
 
           <button
