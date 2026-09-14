@@ -90,6 +90,9 @@ export default function QuickProductSearch() {
           key={searched}
           products={products ?? []}
           emptyMessage={`Nothing found for "${searched}".`}
+          // The DASHBOARD's search. The same component serves /product-search,
+          // and the cart records which of the two a product was collected from.
+          cartSource="dashboard_search"
         />
       )}
     </section>

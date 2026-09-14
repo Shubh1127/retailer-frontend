@@ -31,7 +31,7 @@ const tabs: {
   { href: "/jobs", label: "Jobs", enabled: true, icon: "jobs" },
   { href: "/scan", label: "Scan", enabled: true, icon: "scan" },
   { href: "/product-search", label: "Product search", enabled: true, icon: "search" },
-  { href: "/orders", label: "Order list", enabled: true, icon: "list" },
+  { href: "/order-cart", label: "Order cart", enabled: true, icon: "basket" },
   // Compare, Reconcile and Mappings used to sit here greyed out with a
   // "Coming soon" tooltip. Six months of that teaches people to read past the
   // nav rather than along it, and they cost width the real destinations wanted.

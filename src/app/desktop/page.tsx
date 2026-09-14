@@ -10,17 +10,19 @@
  *
  * NO STATE, SO NO `"use client"`. Everything here is a fact about a published
  * release; the only interactive element is a link. A client component would
- * ship JavaScript to render a page that never changes after it arrives.
+ * ship JavaScript to render a page that never changes after it arrives — an
+ * async server component fetches once on the server and still ships none.
  *
- * THE VERSION AND URL COME FROM `lib/desktopRelease`, not from this file, so
- * shipping 0.1.3 is a change to release metadata rather than a change to a
- * page. See that module.
+ * THE VERSION AND URL COME FROM `lib/desktopRelease`, not from this file.
+ * `getLatestWindowsRelease` reads the version straight out of `latest.json`
+ * in the release bucket, so shipping 0.1.3 is dropping a file in Supabase
+ * Storage, not a change to this page. See that module.
  */
 
 import type { Metadata } from "next";
 
 import AppShell from "@/components/AppShell";
-import { windowsRelease } from "@/lib/desktopRelease";
+import { getLatestWindowsRelease } from "@/lib/desktopRelease";
 
 export const metadata: Metadata = {
   title: "RetailCompare Desktop — download for Windows",
@@ -50,8 +52,8 @@ function Step({ n, children }: { n: number; children: React.ReactNode }) {
   );
 }
 
-export default function DesktopDownloadPage() {
-  const release = windowsRelease;
+export default async function DesktopDownloadPage() {
+  const release = await getLatestWindowsRelease();
 
   return (
     <AppShell active="Desktop app">

@@ -2,19 +2,20 @@
  * What the download page knows about the published Windows desktop build.
  *
  * ONE PLACE, SO THE PAGE IS NOT THE RELEASE PROCESS. A new desktop version
- * should never mean editing JSX. Today the facts are constants here; when the
- * release pipeline starts publishing them — the updater already writes
- * `latest.json` beside the installer in the same public bucket — this module
- * becomes the thing that reads them, and the page does not change at all.
- * Everything it exports is therefore *data about a release*, never markup.
+ * should never mean editing JSX. The version shown is read from `latest.json`
+ * in the public Supabase Storage bucket — the exact manifest the installed
+ * app's own auto-updater polls — so publishing a release (dropping the new
+ * installer and manifest in the bucket) is the whole release process. The
+ * page picks it up on its own; nothing here needs a redeploy.
  *
- * THE URL IS BUILT, NOT PASTED. The installer's name follows the bundler's
- * convention (`RetailCompare_<version>_<arch>-setup.exe`), so deriving it from
- * the version is what keeps the two from drifting apart in a hand-edit.
+ * THE URL COMES FROM THE MANIFEST, NOT FROM PASTING. `latest.json` already
+ * names the installer it goes with, under `platforms["windows-x86_64"].url`.
+ * Reading that instead of re-deriving a filename from the version is what
+ * keeps the link from drifting apart from what got uploaded.
  *
  * NOTHING SECRET LIVES HERE. The bucket is public and unauthenticated by
- * design — it is what the auto-updater fetches from — so the only values below
- * are ones already served to anyone who runs the app.
+ * design — it is what the auto-updater fetches from — so the only values
+ * below are ones already served to anyone who runs the app.
  */
 
 /** The public Supabase Storage bucket the installer and manifest are served from. */
@@ -22,8 +23,26 @@ const RELEASE_BUCKET_URL =
   process.env.NEXT_PUBLIC_DESKTOP_RELEASE_BASE_URL ??
   "https://ijqxpoutyvgynspywgqf.supabase.co/storage/v1/object/public/desktop-updates";
 
-/** The currently published desktop version. Matches the Tauri bundle's own. */
-const CURRENT_VERSION = process.env.NEXT_PUBLIC_DESKTOP_VERSION ?? "0.1.2";
+/**
+ * Used only when the manifest can't be read (offline build, Supabase down,
+ * bucket not seeded yet). Bump it when you remember to, but a stale value
+ * here is a fallback, not the source of truth — see `getLatestWindowsRelease`.
+ */
+const FALLBACK_VERSION = process.env.NEXT_PUBLIC_DESKTOP_VERSION ?? "0.1.2";
+
+/**
+ * A closed beta is not code-signed yet, and the page must say so rather than
+ * imply otherwise. This is a fact about the release *process*, not something
+ * `latest.json` states, so it stays a flag here rather than derived from the
+ * manifest. Flip it when a signed build ships.
+ */
+const CODE_SIGNED = process.env.NEXT_PUBLIC_DESKTOP_CODE_SIGNED === "true";
+const BETA = process.env.NEXT_PUBLIC_DESKTOP_BETA !== "false";
+
+const ARCHITECTURE = "x64";
+const TAURI_TARGET = "windows-x86_64";
+const MANIFEST_URL = `${RELEASE_BUCKET_URL}/latest.json`;
+const MANIFEST_FETCH_TIMEOUT_MS = 5_000;
 
 export interface DesktopRelease {
   version: string;
@@ -34,16 +53,8 @@ export interface DesktopRelease {
   installerUrl: string;
   /** The file a browser will save. Shown so the retailer recognises it. */
   installerFilename: string;
-  /**
-   * The updater manifest the installed app polls. Not linked from the page —
-   * it is here because "where the release lives" is one fact, and splitting it
-   * across two files is how the two get out of step.
-   */
+  /** The updater manifest this release was read from (or would be). */
   manifestUrl: string;
-  /**
-   * A closed beta is not code-signed yet, and the page must say so rather than
-   * imply otherwise. A signed build flips this flag; nothing else changes.
-   */
   codeSigned: boolean;
   beta: boolean;
 }
@@ -52,15 +63,56 @@ function installerFilename(version: string, arch: string): string {
   return `RetailCompare_${version}_${arch}-setup.exe`;
 }
 
-const ARCHITECTURE = "x64";
+function buildRelease(version: string, installerUrl?: string): DesktopRelease {
+  const filename = installerFilename(version, ARCHITECTURE);
+  return {
+    version,
+    platform: "Windows",
+    architecture: ARCHITECTURE,
+    installerFilename: filename,
+    installerUrl: installerUrl ?? `${RELEASE_BUCKET_URL}/${filename}`,
+    manifestUrl: MANIFEST_URL,
+    codeSigned: CODE_SIGNED,
+    beta: BETA,
+  };
+}
 
-export const windowsRelease: DesktopRelease = {
-  version: CURRENT_VERSION,
-  platform: "Windows",
-  architecture: ARCHITECTURE,
-  installerFilename: installerFilename(CURRENT_VERSION, ARCHITECTURE),
-  installerUrl: `${RELEASE_BUCKET_URL}/${installerFilename(CURRENT_VERSION, ARCHITECTURE)}`,
-  manifestUrl: `${RELEASE_BUCKET_URL}/latest.json`,
-  codeSigned: false,
-  beta: true,
-};
+/** The build-time fallback release. Exported so callers have a value even without a fetch. */
+export const windowsRelease: DesktopRelease = buildRelease(FALLBACK_VERSION);
+
+/** The slice of Tauri's v2 updater manifest this page actually reads. */
+interface UpdaterManifest {
+  version?: string;
+  platforms?: Record<string, { url?: string; signature?: string } | undefined>;
+}
+
+/**
+ * The version actually published right now, read from the same `latest.json`
+ * the installed app's auto-updater polls. This is what the download page
+ * should render — it can never disagree with what the updater will offer an
+ * existing install, because both read the one file.
+ *
+ * Any failure (network, bad JSON, a manifest missing the fields we need)
+ * falls back to `windowsRelease` rather than throwing — a Supabase hiccup
+ * should show a slightly stale version, not a broken page.
+ */
+export async function getLatestWindowsRelease(): Promise<DesktopRelease> {
+  try {
+    const response = await fetch(MANIFEST_URL, {
+      signal: AbortSignal.timeout(MANIFEST_FETCH_TIMEOUT_MS),
+      // Every page load reads the manifest fresh — a retailer opening this
+      // page right after a release goes up must see the new version, not a
+      // cached one. The trade-off is a Supabase round trip on every request,
+      // which the short timeout above bounds.
+      cache: "no-store",
+    });
+    if (!response.ok) return windowsRelease;
+
+    const manifest = (await response.json()) as UpdaterManifest;
+    if (!manifest.version) return windowsRelease;
+
+    return buildRelease(manifest.version, manifest.platforms?.[TAURI_TARGET]?.url);
+  } catch {
+    return windowsRelease;
+  }
+}

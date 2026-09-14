@@ -191,10 +191,10 @@ export default function BasketsPage() {
               here.
             </p>
             <Link
-              href="/orders"
+              href="/order-cart"
               className="mt-2 rounded-md border border-line px-3 py-1.5 text-[12.5px] font-medium text-ink hover:bg-canvas"
             >
-              Build an order list
+              Build an order cart
             </Link>
           </div>
         ) : (

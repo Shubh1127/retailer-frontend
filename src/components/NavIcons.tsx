@@ -26,7 +26,8 @@ export type NavIconName =
   | "basket"
   | "store"
   | "desktop"
-  | "user";
+  | "user"
+  | "delete";
 
 const PATHS: Record<NavIconName, React.ReactNode> = {
   home: (
@@ -97,6 +98,15 @@ const PATHS: Record<NavIconName, React.ReactNode> = {
       <path d="M6.5 18.5a6 6 0 0 1 11 0" />
     </>
   ),
+  /** A trash can — removing a line from a list, never a supplier basket. */
+  delete: (
+    <>
+      <path d="M5 7h14" />
+      <path d="M9.5 7V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v2" />
+      <path d="M7 7v12a1.5 1.5 0 0 0 1.5 1.5h7A1.5 1.5 0 0 0 17 19V7" />
+      <path d="M10 11v5M14 11v5" />
+    </>
+  ),
 };
 
 export default function NavIcon({
@@ -104,12 +114,15 @@ export default function NavIcon({
   size = 16,
   active = false,
   className = "",
+  strokeWidth,
 }: {
   name: NavIconName;
   size?: number;
   /** Thickens the stroke. The SHAPE stays the same — see the header. */
   active?: boolean;
   className?: string;
+  /** Overrides the active/inactive default, for a one-off context like a button. */
+  strokeWidth?: number;
 }) {
   return (
     <svg
@@ -118,7 +131,7 @@ export default function NavIcon({
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth={active ? 2.1 : 1.7}
+      strokeWidth={strokeWidth ?? (active ? 2.1 : 1.7)}
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"

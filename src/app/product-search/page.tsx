@@ -231,6 +231,7 @@ function ProductSearch() {
             key={searched}
             products={results?.products ?? []}
             emptyMessage={`No supplier catalogue has a product for "${searched}".`}
+            cartSource="product_search"
           />
         </div>
       )}

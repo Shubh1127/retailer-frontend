@@ -53,13 +53,13 @@ describe("the three ways to start", () => {
     expect(push).toHaveBeenCalledWith("/scan?camera=1");
   });
 
-  it("sends a sheet through the order list", () => {
+  it("sends a sheet through the order cart", () => {
     render(<StartOptions />);
-    fireEvent.click(screen.getByRole("button", { name: "Build an order list" }));
+    fireEvent.click(screen.getByRole("button", { name: "Build an order cart" }));
 
     // NOT straight into a job. Uploading used to fan two hundred lines out to
     // four live trade accounts before anyone had read the file.
-    expect(push).toHaveBeenCalledWith("/orders");
+    expect(push).toHaveBeenCalledWith("/order-cart");
   });
 });
 

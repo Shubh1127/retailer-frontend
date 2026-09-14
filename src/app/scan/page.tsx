@@ -714,8 +714,8 @@ export default function ScanPage() {
             because it never waits on a supplier.
           </p>
         </div>
-        <Link href="/orders" className="text-[13px] text-link hover:underline">
-          Order list →
+        <Link href="/order-cart" className="text-[13px] text-link hover:underline">
+          Order cart →
         </Link>
       </div>
 

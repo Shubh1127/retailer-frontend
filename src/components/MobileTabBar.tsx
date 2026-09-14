@@ -42,7 +42,7 @@ interface Tab {
 
 const TABS: Tab[] = [
   { href: "/dashboard", label: "Dashboard", icon: "home" },
-  { href: "/orders", label: "Order list", icon: "list" },
+  { href: "/order-cart", label: "Order cart", icon: "basket" },
   /**
    * `?camera=1` opens the viewfinder on arrival.
    *

@@ -25,10 +25,7 @@
  *                product — and sends the order to somebody dearer.
  *
  * THE ROW'S IDENTITY FOLLOWS THE WINNER. Barcode, picture and the "View on
- * supplier" link all belong to the supplier the row is actually offering. They
- * used to come from whichever listing happened to arrive first, so a row won by
- * Kadona could link to a Musgrave search for a barcode Musgrave do not carry —
- * a dead end presented as the product's page.
+ * supplier" link all belong to the supplier the row is actually offering.
  *
  * GROUPED ON THE BARCODE, never the name. Four suppliers write the same product
  * four ways, and a matcher loose enough to join those would put two different
@@ -38,12 +35,26 @@
  * deliberately not the job pipeline's. Somebody asking what one product costs
  * wants the cheapest price now, not the cheapest after a margin rule meant to
  * stop a weekly order churning supplier relationships.
+ *
+ * TWO DESTINATIONS, NOT ONE. Every row can go on the retailer's own central
+ * Order Cart — an identity, no price required — or straight into a real
+ * supplier Basket, which needs a fetched, live price. See `AddToOrderCartButton`
+ * for the first and `addOne`/`addRow` below for the second.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 
 import ProductGlyph from "@/components/ProductGlyph";
+import NavIcon from "@/components/NavIcons";
+import AddToOrderCartButton from "@/components/AddToOrderCart";
 import { useSupplierGate } from "@/components/SupplierGate";
+import {
+  lookupOrderCartLines,
+  removeOrderListLine,
+  setOrderListCases,
+  type OrderCartItemInput,
+  type OrderCartSource,
+} from "@/lib/api/orderList";
 import { ApiError } from "@/lib/api/client";
 import {
   addItems,
@@ -53,6 +64,15 @@ import {
   VerificationRequiredError,
   type CartSupplier,
 } from "@/lib/api/cart";
+import {
+  basketQuantity,
+  inBasket,
+  invalidateBasket,
+  readBaskets,
+  type BasketSnapshot,
+} from "@/lib/basketState";
+import { addToOrderCart } from "@/lib/api/orderList";
+import { SUPPLIER_ORDER } from "@/lib/suppliers";
 import { eur } from "@/lib/mock-data";
 import {
   fetchLivePrices,
@@ -73,27 +93,12 @@ import {
 const MAX_PRICE_ITEMS = 60;
 
 /**
- * Suppliers in a fixed order, so columns do not reshuffle between searches.
- *
- * Also the roster asked about on Fetch: a supplier absent from a row is one our
- * catalogues do not mention, which is not the same as one that does not stock
- * it — see `missingSuppliersFor`.
- */
-const SUPPLIER_ORDER = [
-  "musgrave",
-  "oreilly",
-  "barrygroup-ambient",
-  "barrygroup-chill",
-  "kadona",
-];
-
-/**
  * BARRY IS ONE SITE WITH TWO BASKETS, and asking it twice for one barcode is
  * two requests to the same search for the same answer. The search is
  * department-scoped, so one ask covers whichever department the product lives
  * in and comes back tagged with the right basket.
  */
-const DISCOVERY_ROSTER = ["musgrave", "oreilly", "barrygroup-ambient", "kadona"];
+const DISCOVERY_ROSTER = SUPPLIER_ORDER.filter((id) => id !== "barrygroup-chill");
 
 /** Rows whose gaps are worth a live look. Beyond this, nobody is reading. */
 const MAX_DISCOVERY_ROWS = 4;
@@ -143,16 +148,10 @@ function group(products: readonly SupplierSearchProduct[]): Row[] {
     /**
      * One listing per supplier, and THE CASE WINS OVER THE BREAK-PACK SINGLE.
      *
-     * A case and the single sold out of it share one barcode at very different
-     * prices. Take whichever listing arrived first and a supplier who happens
-     * to return their single first looks dramatically cheapest — the row would
-     * be comparing one bottle against everyone else's tray, and Add would send
-     * the order for the bottle.
-     *
-     * A price is carried over ONLY when the backend marked it `repriced`, which
-     * means it came from the live-fallback tier and was read at the supplier
-     * seconds ago. A catalogue price is as old as the last sync and looks
-     * identical on screen, so it stays a dash until somebody asks.
+     * A price is carried over ONLY when the backend marked it `repriced`,
+     * which means it came from the live-fallback tier and was read at the
+     * supplier seconds ago. A catalogue price is as old as the last sync and
+     * looks identical on screen, so it stays a dash until somebody asks.
      */
     const existing = row.offers.get(product.supplier);
     if (!existing || (existing.isSingle === true && product.isSingle !== true)) {
@@ -175,9 +174,7 @@ function group(products: readonly SupplierSearchProduct[]): Row[] {
  * Cheapest LIVE price, among suppliers who can actually supply it.
  *
  * A catalogue price cannot win; nor can a blank; nor can a supplier who has
- * SAID they are out of stock. That last one is why Add points somewhere real:
- * buying on the price of a line the supplier told us they cannot fill is an
- * order that will not arrive, and the saving was never available.
+ * SAID they are out of stock.
  *
  * `inStock === undefined` still wins. Barry's listing and O'Reilly's search
  * page publish no stock field at all, so treating silence as a refusal would
@@ -199,9 +196,7 @@ function withWinner(row: Row): Row {
  * The offer whose barcode, picture and product page the row should show.
  *
  * The WINNER once there is one, because that is the supplier the row is
- * offering and the only one whose page is worth opening. Before prices are
- * fetched, the first offer that publishes a real product page — a search that
- * finds nothing is a worse link than a picture with no link at all.
+ * offering and the only one whose page is worth opening.
  */
 function identityOf(row: Row): Offer | undefined {
   if (row.best) {
@@ -219,10 +214,6 @@ const pairKey = (supplierId: string, sku: string): string => `${supplierId}:${sk
 
 /**
  * The product picture, with a departmental glyph behind it.
- *
- * Suppliers publish broken image URLs often enough that this must not be an
- * `<img>` alone — a hole in the row reads as the page being broken, which is a
- * worse lie than a placeholder.
  */
 function Thumb({ src, alt }: { src?: string; alt: string }) {
   const [failed, setFailed] = useState(false);
@@ -242,22 +233,34 @@ function Thumb({ src, alt }: { src?: string; alt: string }) {
   );
 }
 
+/** What `lookupOrderCartLines` found for one row, or what an add just produced. */
+interface OrderCartLine {
+  lineId: number;
+  cases: number;
+}
+
+/**
+ * Already on the order cart — a status, not a second quantity control.
+ *
+ * ONE STEPPER PER ROW, not two. The Qty column already asks "how many", and
+ * once a row is on the cart that number IS the cart's own quantity — see
+ * where `qty`/`onQuantityChange` is drawn below, which switches to editing
+ * `cartLine.cases` directly instead of a pre-add draft. This badge is what
+ * the Order Cart column says instead: the same plain-status treatment the
+ * real supplier Basket column already uses once a line is there.
+ */
+function OrderCartBadge() {
+  return (
+    <span className="rounded bg-good-50 px-1.5 py-0.5 text-[10.5px] font-medium text-good-600">
+      ✓ In cart
+    </span>
+  );
+}
+
 /**
  * What the supplier said about supplying it, under their price.
- *
- * THREE STATES, THREE RENDERINGS, and the third is blank. Musgrave and Kadona
- * publish stock; Barry's listing and O'Reilly's search page do not. Drawing "in
- * stock" for a supplier who never said it would be inventing an assurance on
- * their behalf, and drawing "out of stock" would stop a buyer ordering
- * something perfectly available — so silence renders as silence.
  */
-function StockNote({
-  offer,
-  supplierId,
-}: {
-  offer: Offer;
-  supplierId: string;
-}) {
+function StockNote({ offer, supplierId }: { offer: Offer; supplierId: string }) {
   if (offer.inStock === undefined) return null;
 
   if (offer.inStock) {
@@ -283,11 +286,6 @@ function StockNote({
 
 /**
  * One supplier's answer about one product: the price, or why there isn't one.
- *
- * EXTRACTED so the table cell and the phone card cannot drift. The four
- * meanings of "no price" here — not asked, unreachable, answered-with-nothing,
- * out of stock — are the whole point of this screen, and a second rendering of
- * them on a smaller layout is a second chance to flatten one into another.
  */
 function OfferPrice({
   offer,
@@ -305,15 +303,6 @@ function OfferPrice({
           {eur(offer.livePrice)}
         </div>
       ) : offer.status === "not-connected" ? (
-        /**
-         * A SETTING, NOT AN OUTAGE.
-         *
-         * This used to render as "unavailable", whose tooltip says the
-         * wholesaler could not be reached and explicitly says nothing about
-         * stock — so a retailer who simply had not connected an account was
-         * told four suppliers were down, and pointed away from the one thing
-         * they could fix.
-         */
         <a
           href="/suppliers"
           title={`You have not connected a ${cartSupplierLabel(supplierId)} account yet.`}
@@ -322,11 +311,6 @@ function OfferPrice({
           not connected
         </a>
       ) : offer.status === "unavailable" ? (
-        // WE COULD NOT ASK. Says nothing about stock.
-        //
-        // The backend's reason — a Cloudflare 403 with a URL and a curl
-        // command — is written for whoever fixes it, so it goes to the console,
-        // not into a tooltip on a shop floor.
         <span
           title={`${cartSupplierLabel(supplierId)} could not be reached. This says nothing about whether they stock it.`}
           className="text-[11.5px] text-red-600"
@@ -334,7 +318,6 @@ function OfferPrice({
           unavailable
         </span>
       ) : offer.status === "not-found" ? (
-        // They answered, and had nothing under this code.
         <span
           title={`${cartSupplierLabel(supplierId)} answered, and returned nothing for ${offer.sku ?? "this code"}.`}
           className="text-[11.5px] text-amber-700"
@@ -342,28 +325,12 @@ function OfferPrice({
           not found
         </span>
       ) : (
-        // Stocked, not yet priced. Nobody has asked.
         <span className="text-ink-faint">—</span>
       )}
 
-      {/* DIRECTLY UNDER THE PRICE, because that is the pair a buyer reads:
-          €24.00 is only an offer if they can supply it. Nothing is drawn when
-          the supplier said nothing — see `StockNote`. */}
       <StockNote offer={offer} supplierId={supplierId} />
 
-      {/* THE SUPPLIER CODE IS NOT PRINTED HERE. A buyer comparing four prices
-          does not read it, and four columns of digits under four figures buried
-          the numbers that are the point of the table. It is still what Add
-          sends — `row.best` carries it — and it is still on the admin's confirm
-          panel, where somebody does have to check which listing a mapping is
-          pinned to.
-
-          "single" STAYS. A case and the break-pack single sold out of it share
-          one barcode at very different prices, and an unlabelled single reads
-          as a bargain. */}
-      {offer.isSingle && (
-        <div className="text-[10.5px] font-medium text-amber-700">single</div>
-      )}
+      {offer.isSingle && <div className="text-[10.5px] font-medium text-amber-700">single</div>}
     </>
   );
 }
@@ -374,26 +341,21 @@ interface RowView {
   quantity: number;
   state?: AddState;
   canOrder: boolean;
+  /**
+   * Can this product go on the ORDER CART?
+   *
+   * Identity, not a price. Kept apart from `canOrder`, which is about a real
+   * supplier basket and genuinely needs a winner.
+   */
+  canSelect: boolean;
   identity?: Offer;
   link?: string;
+  /** What `lookupOrderCartLines` found for this row, if it is already on the cart. */
+  cartLine?: OrderCartLine;
 }
 
 /**
  * One searched product, on a phone.
- *
- * WHY NOT THE TABLE, NARROWER
- *
- * Five supplier columns need 760px. A phone has 360, and both ways of forcing
- * the table into it lose the thing the table is for: shrunk, the five prices
- * are illegible; scrolled sideways, the product name is off the left edge by
- * the time the fifth price arrives, so the buyer is comparing numbers with
- * nothing attached to them.
- *
- * The card leads with the winner `withWinner` already picked and folds the
- * losing quotes away. Every value here is read from the row — no second
- * cheapest-supplier rule, no second add flow — and the prices are drawn by the
- * same `OfferPrice` the table cells use, so "unavailable", "not found" and
- * "not asked yet" cannot come out meaning different things on a phone.
  */
 function SearchRowCard({
   view,
@@ -403,7 +365,10 @@ function SearchRowCard({
   onQuantityChange,
   adding,
   onAdd,
-  blockedFromSelection,
+  cartSource,
+  cartLineBusy,
+  onCartAdded,
+  onCartLineQuantityChange,
 }: {
   view: RowView;
   columns: readonly string[];
@@ -413,17 +378,18 @@ function SearchRowCard({
   /** Which row, if any, is mid-add — the table's own `adding` state. */
   adding: string | null;
   onAdd: () => void;
-  blockedFromSelection: boolean;
+  cartSource: OrderCartSource;
+  /** Is THIS row's order-cart quantity mid-write? */
+  cartLineBusy: boolean;
+  onCartAdded: (line: OrderCartLine) => void;
+  onCartLineQuantityChange: (line: OrderCartLine, next: number) => void;
 }) {
-  const { row, quantity, state, canOrder, identity, link } = view;
+  const { row, quantity, state, canOrder, canSelect, identity, link, cartLine } = view;
   const [showOthers, setShowOthers] = useState(false);
 
   const winnerId = row.best?.supplierId;
   const winnerOffer = winnerId ? row.offers.get(winnerId) : undefined;
 
-  // Present suppliers, in the table's own column order, minus the winner. Kept
-  // whole: a supplier that answered "not found" is a real statement about their
-  // catalogue, and dropping it would make the roster look shorter than it is.
   const others = columns.filter((id) => row.offers.has(id) && id !== winnerId);
 
   return (
@@ -432,7 +398,9 @@ function SearchRowCard({
         <input
           type="checkbox"
           checked={picked}
-          disabled={!canOrder || state !== undefined || blockedFromSelection}
+          // SELECTION IS NOT PRICING. A product with an identity can go on
+          // the order cart whether or not anybody has quoted for it.
+          disabled={!canSelect}
           aria-label={`Select ${row.name}`}
           onChange={(event) => onPick(event.target.checked)}
           className="mt-1 h-4 w-4 shrink-0 accent-teal-600 disabled:opacity-30"
@@ -440,9 +408,6 @@ function SearchRowCard({
 
         <Thumb {...(identity?.imageUrl ? { src: identity.imageUrl } : {})} alt={row.name} />
 
-        {/* `break-words` throughout: wholesale product names are not written
-            for a 360px screen, and a name that overflows would either be
-            clipped or would push the card wider than the viewport. */}
         <div className="min-w-0 flex-1">
           <h3 className="break-words text-[14px] font-semibold leading-snug text-ink">
             {identity?.name ?? row.name}
@@ -485,9 +450,6 @@ function SearchRowCard({
         </div>
       ) : (
         <div className="mt-3 rounded-lg border border-line bg-canvas px-3 py-2.5 text-[12.5px] text-ink-soft">
-          {/* NOT "no price" — nobody has asked yet. Nothing is ordered on a
-              catalogue price, so there is deliberately no winner until the
-              suppliers have been contacted. */}
           No live price yet. Press &ldquo;Fetch live prices&rdquo; above to compare{" "}
           {row.offers.size} supplier{row.offers.size === 1 ? "" : "s"}.
         </div>
@@ -516,7 +478,6 @@ function SearchRowCard({
             <ul className="mt-1 space-y-1.5 rounded-lg border border-line bg-canvas px-3 py-2.5">
               {others.map((supplierId) => {
                 const offer = row.offers.get(supplierId)!;
-                // The gap against the winner, where both are real numbers.
                 const delta =
                   row.best && offer.livePrice !== undefined
                     ? offer.livePrice - row.best.price
@@ -543,36 +504,70 @@ function SearchRowCard({
         </div>
       )}
 
-      {/* ---- How many ------------------------------------------------------ */}
+      {/* ---- How many ------------------------------------------------------
+          ONE STEPPER, TWO MEANINGS — the same rule the real supplier basket
+          column uses elsewhere. Not yet on the order cart, this is a DRAFT the
+          buyer adjusts before adding. Already there, every press is a live
+          change to that cart line: the number IS the cart's own quantity, not
+          a separate copy of it, so there is nothing to keep in sync. */}
       <div className="mt-3 flex items-center justify-between gap-3">
         <span className="text-[12.5px] font-medium text-ink-soft">Qty</span>
         <div className="flex items-center gap-1">
           <button
             type="button"
-            disabled={quantity <= 1}
-            onClick={() => onQuantityChange(quantity - 1)}
-            aria-label={`Decrease ${row.name}`}
+            disabled={cartLine ? cartLineBusy : quantity <= 1}
+            onClick={() =>
+              cartLine
+                ? onCartLineQuantityChange(cartLine, cartLine.cases - 1)
+                : onQuantityChange(quantity - 1)
+            }
+            aria-label={
+              cartLine
+                ? cartLine.cases <= 1
+                  ? `Remove ${row.name} from the order cart`
+                  : `Fewer ${row.name} in the order cart`
+                : `Decrease ${row.name}`
+            }
             className="h-9 w-9 rounded-md border border-line text-[16px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
           >
-            −
+            {cartLine && cartLine.cases <= 1 ? "🗑" : "−"}
           </button>
-          <span className="w-9 text-center text-[15px] tabular-nums text-ink">{quantity}</span>
+          <span className="w-9 text-center text-[15px] tabular-nums text-ink">
+            {cartLine ? cartLine.cases : quantity}
+          </span>
           <button
             type="button"
-            onClick={() => onQuantityChange(quantity + 1)}
-            aria-label={`Increase ${row.name}`}
-            className="h-9 w-9 rounded-md border border-line text-[16px] leading-none text-ink-soft hover:bg-canvas"
+            disabled={cartLine ? cartLineBusy : false}
+            onClick={() =>
+              cartLine
+                ? onCartLineQuantityChange(cartLine, cartLine.cases + 1)
+                : onQuantityChange(quantity + 1)
+            }
+            aria-label={cartLine ? `More ${row.name} in the order cart` : `Increase ${row.name}`}
+            className="h-9 w-9 rounded-md border border-line text-[16px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
           >
             ＋
           </button>
         </div>
       </div>
 
+      {/* ---- Onto the retailer's own list ----------------------------------
+          ABOVE the basket, and available whether or not prices were fetched.
+          Collecting a product is the step before deciding what it costs; the
+          button underneath spends money at a wholesaler and this one does not. */}
+      <div className="mt-2.5">
+        {cartLine ? (
+          <OrderCartBadge />
+        ) : (
+          <AddToOrderCartButton
+            item={asCartItem(row, identity, quantity)}
+            source={cartSource}
+            onAdded={onCartAdded}
+          />
+        )}
+      </div>
+
       {/* ---- Into whose basket --------------------------------------------- */}
-      {/* ALREADY ADDED IS NOT A BUTTON. On a phone the Add control is the
-          widest thing on the card and sits under the thumb; leaving one on a
-          line already sent would make a second case of it the easiest thing on
-          the screen to order by accident. */}
       <div className="mt-2.5">
         {state ? (
           <div
@@ -618,12 +613,41 @@ function SearchRowCard({
   );
 }
 
+/**
+ * What a row looks like as a cart item.
+ *
+ * IDENTITY IS NOT DECIDED HERE. Everything below is a straight copy of what
+ * the search returned; which of these fields becomes the line's identity is
+ * `cartLineKey`'s decision, server-side.
+ */
+function asCartItem(row: Row, identity: Offer | undefined, quantity: number): OrderCartItemInput {
+  return {
+    ...(identity?.ean ?? row.ean ? { gtin14: (identity?.ean ?? row.ean)! } : {}),
+    ...(identity?.name ?? row.name ? { description: (identity?.name ?? row.name)! } : {}),
+    ...(identity?.supplier ? { supplierId: identity.supplier } : {}),
+    ...(identity?.sku ? { supplierSku: identity.sku } : {}),
+    ...(identity?.isSingle === true ? { isSingle: true } : {}),
+    ...(row.size ? { size: row.size } : {}),
+    cases: quantity,
+  };
+}
+
 export default function ProductPriceTable({
   products,
   emptyMessage,
+  cartSource,
 }: {
   products: readonly SupplierSearchProduct[];
   emptyMessage?: string;
+  /**
+   * Which screen collected this product.
+   *
+   * Written to the cart line's origin so the cart can say where it came from.
+   * A prop rather than something inferred from the URL, because this
+   * component is rendered by two screens and a guess would be right for one
+   * of them.
+   */
+  cartSource: OrderCartSource;
 }) {
   // Shared by /product-search and the dashboard's quick search, so gating here
   // covers both without either page having to remember to.
@@ -646,14 +670,7 @@ export default function ProductPriceTable({
   const [pricedAt, setPricedAt] = useState<string | null>(null);
   const [skippedRows, setSkippedRows] = useState(0);
 
-  /**
-   * Suppliers found by ASKING, rather than by looking them up.
-   *
-   * Kept apart from `products` so a re-search clears them naturally: they belong
-   * to the prices that were fetched, not to the search that found the rows.
-   */
   const [discovered, setDiscovered] = useState<DiscoveredOffer[]>([]);
-  /** Products whose missing suppliers were NOT asked about, for budget. */
   const [gapsUnchecked, setGapsUnchecked] = useState(0);
 
   const [qty, setQty] = useState<Record<string, number>>({});
@@ -662,41 +679,31 @@ export default function ProductPriceTable({
   const [added, setAdded] = useState<Record<string, AddState>>({});
 
   /**
+   * Which rows are ALREADY on the retailer's order cart, and at what
+   * quantity — keyed by row, refreshed from the server whenever the results
+   * change and updated locally the moment an add or a quantity edit succeeds.
+   */
+  const [cartLines, setCartLines] = useState<Map<string, OrderCartLine>>(new Map());
+  /** The one row, if any, whose order-cart quantity is mid-write. */
+  const [cartLineBusyKey, setCartLineBusyKey] = useState<string | null>(null);
+
+  const setCartLineFor = useCallback((rowKey: string, line: OrderCartLine) => {
+    setCartLines((current) => new Map(current).set(rowKey, line));
+  }, []);
+
+  /**
    * What this buyer has ALREADY sent to a basket — `supplier:sku` → quantity.
-   *
-   * Kept apart from `added`, which is what happened in this session. Together
-   * they are what stops the screen forgetting: adding a case used to live in
-   * React state alone, so a refresh or a repeat search brought back a bare Add
-   * button and the obvious recovery was to press it and send a second case.
-   *
-   * READ FROM OUR OWN DATABASE, not from the suppliers' baskets. Reading a
-   * basket is a live request to a trade account, per supplier, and this runs on
-   * every search.
    */
   const [alreadySent, setAlreadySent] = useState<Map<string, number | undefined>>(new Map());
 
   /**
-   * Set when the check itself failed, which is NOT the same as nothing being in
-   * a basket — and used to be indistinguishable from it.
-   *
-   * The table is written on a best-effort basis: a failure there must never
-   * break an add that already succeeded at the supplier, so it is logged and
-   * swallowed. That is right for the WRITE. Silently swallowing the READ meant
-   * a missing table, an expired session and "you have added nothing" all
-   * rendered as a bare Add button — so the honest recovery, pressing it again,
-   * was also the wrong one.
+   * What is ACTUALLY in each supplier's basket, read from the supplier.
    */
+  const [baskets, setBaskets] = useState<BasketSnapshot>({ baskets: new Map(), unreadable: [] });
+
   const [addsUnavailable, setAddsUnavailable] = useState(false);
 
   const rows = useMemo(() => {
-    /**
-     * Discovered suppliers join their row as ordinary offers.
-     *
-     * Flattened into the same `SupplierSearchProduct` shape rather than carried
-     * separately, so everything downstream — the winner, the columns, Add —
-     * treats "found in our catalogue" and "found by asking" identically. They
-     * are the same claim: this wholesaler sells this product at this price.
-     */
     const asProducts: SupplierSearchProduct[] = discovered.map((offer) => ({
       supplier: offer.supplierId,
       name: offer.name,
@@ -713,8 +720,6 @@ export default function ProductPriceTable({
     }));
 
     const grouped = group([...products, ...asProducts]);
-    // Prices are held separately and merged here, so a re-search does not have
-    // to thread them back through the grouping.
     return grouped
       .map((row) => ({
         ...row,
@@ -728,12 +733,8 @@ export default function ProductPriceTable({
                 ...offer,
                 livePrice: found.price,
                 status: found.status,
-                // The live answer replaces the catalogue's, including when the
-                // live one is "they did not say".
                 inStock: found.inStock,
-                ...(found.availabilityText
-                  ? { availabilityText: found.availabilityText }
-                  : {}),
+                ...(found.availabilityText ? { availabilityText: found.availabilityText } : {}),
               },
             ] as const;
           }),
@@ -742,12 +743,6 @@ export default function ProductPriceTable({
       .map(withWinner);
   }, [products, prices, discovered]);
 
-  /**
-   * Every (supplier, sku) on screen, as a stable string.
-   *
-   * A string rather than the array itself, so the effect below re-runs when the
-   * RESULTS change and not on every render that rebuilds an equal array.
-   */
   const pairSignature = useMemo(
     () =>
       rows
@@ -758,6 +753,39 @@ export default function ProductPriceTable({
         .join("|"),
     [rows],
   );
+
+  /**
+   * Read the REAL baskets for the suppliers these results actually name.
+   */
+  const basketSuppliers = useMemo(
+    () =>
+      [
+        ...new Set(
+          rows
+            .flatMap((row) => [...row.offers.values()].map((offer) => offer.supplier))
+            .filter((id) => supportsCart(id)),
+        ),
+      ]
+        .sort()
+        .join("|"),
+    [rows],
+  );
+
+  useEffect(() => {
+    if (!basketSuppliers) {
+      setBaskets({ baskets: new Map(), unreadable: [] });
+      return;
+    }
+
+    let cancelled = false;
+    void readBaskets(basketSuppliers.split("|")).then((snapshot) => {
+      if (!cancelled) setBaskets(snapshot);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [basketSuppliers]);
 
   useEffect(() => {
     if (!pairSignature) {
@@ -779,9 +807,6 @@ export default function ProductPriceTable({
       })
       .catch((error: unknown) => {
         if (cancelled) return;
-        // SAID, not swallowed. The results are still correct and orderable; what
-        // is lost is the ability to tell an untouched product from one already
-        // on an order, and a buyer needs to know that is what they are missing.
         setAddsUnavailable(true);
         // eslint-disable-next-line no-console
         console.warn("[basket adds] could not be read —", error);
@@ -806,29 +831,145 @@ export default function ProductPriceTable({
     [rows],
   );
 
-  const selected = orderable.filter((row) => picked.has(row.key));
-
   /** True when any of this row's suppliers already holds it. */
   const alreadyOnAnOrder = (row: Row): boolean =>
     [...row.offers.values()].some(
       (offer) => offer.sku && alreadySent.has(pairKey(offer.supplier, offer.sku)),
     );
 
+  /**
+   * ── SELECTING FOR THE ORDER CART NEEDS NO PRICES ──────────────────────────
+   *
+   * The central Order Cart and a supplier Basket are different things, and
+   * only the second needs a winner. The cart is the retailer's own working
+   * list: it needs an IDENTITY — a barcode, or a supplier's own code.
+   */
+  const selectableForCart = useMemo(
+    () => rows.filter((row) => Boolean(row.ean) || Boolean(identityOf(row)?.sku)),
+    [rows],
+  );
+
+  const selectedForCart = selectableForCart.filter((row) => picked.has(row.key));
+
+  /** The BASKET selection is narrower, and stays that way. */
+  const selected = orderable.filter((row) => picked.has(row.key) && !alreadyOnAnOrder(row));
+
+  const [cartBusy, setCartBusy] = useState(false);
+  const [cartResult, setCartResult] = useState<string | null>(null);
+
+  /**
+   * Ask the cart which of these results it already holds, in ONE request.
+   *
+   * `requestKey` is each row's own key — the identity the cart matched a line
+   * on is server-side encoding this screen never needs to know — so a match
+   * comes back already lined up with a row.
+   *
+   * Re-run whenever the searched rows change. A row that starts out not on
+   * the cart is corrected the moment an add succeeds (see `setCartLineFor`),
+   * so this is a background refresh rather than the only source of truth.
+   */
+  const refreshCartLines = useCallback(async () => {
+    if (selectableForCart.length === 0) {
+      setCartLines(new Map());
+      return;
+    }
+
+    try {
+      const items = selectableForCart.map((row) => ({
+        ...asCartItem(row, identityOf(row), 1),
+        requestKey: row.key,
+      }));
+      const matches = await lookupOrderCartLines(items);
+      setCartLines(new Map(matches.map((match) => [match.requestKey, match])));
+    } catch {
+      // Best effort: a failed lookup just means rows show an Add button
+      // instead of their true state, which is what they showed before this
+      // existed. Nothing here is worth interrupting a search over.
+    }
+  }, [selectableForCart]);
+
+  useEffect(() => {
+    void refreshCartLines();
+  }, [refreshCartLines]);
+
+  /**
+   * Change (or remove) how many of an already-added row are on the cart.
+   *
+   * Zero is not a quantity anywhere in the central cart — the − button
+   * removes the line rather than writing one, the same rule the order cart
+   * page's own stepper follows.
+   */
+  const changeCartLineQuantity = async (rowKey: string, line: OrderCartLine, next: number) => {
+    const cases = Math.max(0, Math.floor(next));
+    setCartLineBusyKey(rowKey);
+    try {
+      if (cases <= 0) {
+        await removeOrderListLine(line.lineId);
+        setCartLines((current) => {
+          const copy = new Map(current);
+          copy.delete(rowKey);
+          return copy;
+        });
+        return;
+      }
+
+      const updated = await setOrderListCases(line.lineId, cases);
+      const stored = updated.lines.find((entry) => entry.id === line.lineId);
+      setCartLineFor(rowKey, { lineId: line.lineId, cases: stored?.cases ?? cases });
+    } catch (error) {
+      setCartResult(
+        error instanceof ApiError ? error.message : "Could not update your order cart.",
+      );
+    } finally {
+      setCartLineBusyKey(null);
+    }
+  };
+
+  /**
+   * Put every ticked product on the central Order Cart, in ONE action.
+   */
+  const addSelectedToCart = async () => {
+    if (selectedForCart.length === 0) return;
+
+    setCartBusy(true);
+    setCartResult(null);
+
+    try {
+      const result = await addToOrderCart(
+        selectedForCart.map((row) =>
+          asCartItem(row, identityOf(row), Math.max(1, qty[row.key] ?? 1)),
+        ),
+        { source: cartSource },
+      );
+
+      const addedCount = result.lines.filter((line) => line.outcome === "added").length;
+      const present = result.lines.length - addedCount;
+      const skipped = result.skipped?.length ?? 0;
+
+      setCartResult(
+        [
+          addedCount > 0 ? `${addedCount} added to your order cart` : null,
+          present > 0 ? `${present} already there` : null,
+          skipped > 0 ? `${skipped} could not be identified` : null,
+        ]
+          .filter(Boolean)
+          .join(" · ") || "Nothing to add",
+      );
+
+      // Ticks cleared only for what actually landed, so a refused product
+      // stays selected and visible rather than quietly disappearing.
+      if (skipped === 0) setPicked(new Set());
+      void refreshCartLines();
+    } catch (error) {
+      setCartResult(error instanceof ApiError ? error.message : "Could not reach your order cart.");
+    } finally {
+      setCartBusy(false);
+    }
+  };
+
   const fetchPrices = async () => {
-    /**
-     * NOTHING IS ASKED IF THERE IS NOBODY TO ASK.
-     *
-     * This is the third door into supplier contact, after scanning and sending
-     * an order list, and it was the one left unguarded — so a retailer with no
-     * connected account pressed Fetch live prices, waited, and got "unavailable"
-     * against every supplier. That message means the wholesaler could not be
-     * reached and explicitly says nothing about stock, which is the wrong
-     * explanation for the one problem they can actually fix.
-     */
     if (!gate.guard()) return;
 
-    // Exactly the supplier/SKU pairs our own data named. Nothing speculative,
-    // and never more than the account's budget for one press.
     const items: { supplierId: string; sku: string }[] = [];
     let unpricedRows = 0;
 
@@ -845,14 +986,6 @@ export default function ProductPriceTable({
       items.push(...pairs);
     }
 
-    /**
-     * The suppliers this row's barcode should also be tried at.
-     *
-     * A supplier with NO offer at all is one our catalogues never mentioned —
-     * the gap this fills. A supplier that has an offer is already in `items`.
-     * Barry counts as covered if either basket is present, because one search
-     * answers for both.
-     */
     const discover: { barcode: string; supplierIds: string[] }[] = [];
 
     for (const row of rows.slice(0, MAX_DISCOVERY_ROWS)) {
@@ -867,9 +1000,6 @@ export default function ProductPriceTable({
       if (missing.length > 0) discover.push({ barcode: row.ean, supplierIds: missing });
     }
 
-    // Rows past the cap keep whatever our catalogues knew and are not asked
-    // about. Counted so it can be said rather than silently looking the same as
-    // a supplier that answered nothing.
     const uncheckedRows = rows
       .slice(MAX_DISCOVERY_ROWS)
       .filter((row) => row.ean && row.offers.size < DISCOVERY_ROSTER.length).length;
@@ -886,11 +1016,7 @@ export default function ProductPriceTable({
             `${entry.supplierId}:${entry.sku}`,
             {
               ...(entry.exVatCasePrice !== undefined ? { price: entry.exVatCasePrice } : {}),
-              // Older backends answered without a status; a missing one with no
-              // price means the supplier answered and had nothing.
               status: entry.status ?? (entry.repriced ? "priced" : "not-found"),
-              // Absent stays absent. A supplier that publishes no stock
-              // information must not be shown as either answer.
               ...(entry.inStock !== undefined ? { inStock: entry.inStock } : {}),
               ...(entry.availabilityText ? { availabilityText: entry.availabilityText } : {}),
               ...(entry.error ? { error: entry.error } : {}),
@@ -907,7 +1033,6 @@ export default function ProductPriceTable({
         }
       }
 
-      // Keyed on significant digits, matching how rows are grouped.
       setDiscovered(
         (result.discovered ?? []).map((offer) => ({
           ...offer,
@@ -924,8 +1049,6 @@ export default function ProductPriceTable({
 
       setGapsUnchecked(uncheckedRows + (result.discoverySkipped ?? 0));
       setPricedAt(result.pricedAt);
-      // Said out loud rather than silently dropped: a row left at "—" would
-      // otherwise read as a supplier that answered nothing.
       setSkippedRows(unpricedRows);
     } catch (error) {
       setPriceError(error instanceof ApiError ? error.message : "Could not fetch prices.");
@@ -945,6 +1068,9 @@ export default function ProductPriceTable({
         row.best.supplierId as CartSupplier,
       );
       const failed = result.results.find((entry) => entry.outcome === "failed");
+
+      // WE JUST CHANGED THIS BASKET, so the cached copy is wrong.
+      invalidateBasket(row.best.supplierId);
 
       return failed
         ? { kind: "error", text: failed.error ?? "The supplier rejected this line." }
@@ -974,13 +1100,6 @@ export default function ProductPriceTable({
     setAdding(null);
   };
 
-  /**
-   * Send every TICKED row to its own cheapest supplier.
-   *
-   * Ticked, not "everything on screen". A search for "coca cola" returns a
-   * dozen packs and a button that ordered all of them would be a footgun with
-   * a real supplier basket behind it. Nothing leaves without being chosen.
-   */
   const addSelected = async () => {
     setAdding("__selection__");
     const outcomes = await Promise.all(
@@ -1004,43 +1123,29 @@ export default function ProductPriceTable({
 
   const busy = adding === "__selection__";
 
-  /**
-   * Everything each row needs to be DRAWN, derived once.
-   *
-   * The table and the phone card are two presentations of one row, and both
-   * need the same four answers — how many, is it already on an order, can it be
-   * ordered at all, and which supplier's identity the row is wearing. Deriving
-   * them inside each layout's map would be the same reasoning written twice,
-   * and the two copies would only have to disagree once for a card to offer an
-   * Add the table knows is not orderable.
-   */
   const views = rows.map((row) => {
     const quantity = Math.max(1, qty[row.key] ?? 1);
 
     /**
-     * A line already on an order, from any supplier in this row.
-     *
-     * Checked across ALL of the row's offers rather than just the cheapest: the
-     * buyer may have ordered it from Musgrave last week and Kadona may be
-     * cheaper today, and "you already have this on a Musgrave order" is the
-     * more useful thing to say.
+     * IN THE BASKET RIGHT NOW — asked of the supplier, not of our own records.
      */
     const sent = [...row.offers.values()]
-      .filter((offer) => offer.sku && alreadySent.has(pairKey(offer.supplier, offer.sku)))
       .map((offer) => ({
         supplierId: offer.supplier,
-        quantity: alreadySent.get(pairKey(offer.supplier, offer.sku!)),
-      }))[0];
+        sku: offer.sku,
+        present: inBasket(baskets, offer.supplier, offer.sku),
+      }))
+      .find((offer) => offer.present === true);
 
     const state: AddState | undefined =
       added[row.key] ??
       (sent
         ? {
             kind: "already" as const,
-            // PAST TENSE, deliberately. We know we sent it and the supplier
-            // accepted it; we do not know it is still there, because somebody
-            // may have deleted the line at the supplier's own site since.
-            text: `${sent.quantity !== undefined ? `${sent.quantity} × ` : ""}added to ${cartSupplierLabel(sent.supplierId)}`,
+            text: (() => {
+              const quantity = basketQuantity(baskets, sent.supplierId, sent.sku);
+              return `${quantity !== undefined ? `${quantity} × ` : ""}in ${cartSupplierLabel(sent.supplierId)} basket`;
+            })(),
           }
         : undefined);
 
@@ -1051,8 +1156,10 @@ export default function ProductPriceTable({
       quantity,
       state,
       canOrder: row.best !== undefined && supportsCart(row.best.supplierId),
+      canSelect: Boolean(row.ean) || Boolean(identityOf(row)?.sku),
       identity,
       link: identity ? realPage(identity) : undefined,
+      cartLine: cartLines.get(row.key),
     };
   });
 
@@ -1086,8 +1193,28 @@ export default function ProductPriceTable({
             {pricing ? "Fetching live prices…" : pricedAt ? "Refresh prices" : "Fetch live prices"}
           </button>
 
-          {/* Only once there is something real to order on. Before prices are
-              fetched there is no cheapest supplier to send anything to. */}
+          {/* ── THE ORDER CART, WHICH NEEDS NO PRICES ──────────────────────
+              Always offered. The cart is the retailer's own working list and
+              wants an identity, not a winner. */}
+          <button
+            type="button"
+            disabled={selectedForCart.length === 0 || cartBusy}
+            onClick={() => void addSelectedToCart()}
+            title={
+              selectedForCart.length === 0
+                ? "Tick the products you want, then add them to your order cart"
+                : `Add ${selectedForCart.length} product${selectedForCart.length === 1 ? "" : "s"} to your order cart`
+            }
+            className="inline-flex items-center gap-1.5 rounded-md bg-teal-600 px-3.5 py-1.5 text-[12.5px] font-medium text-white hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <NavIcon name="basket" size={15} strokeWidth={2} />
+            {cartBusy
+              ? "Adding…"
+              : selectedForCart.length === 0
+                ? "Add to Order Cart"
+                : `Add ${selectedForCart.length} to Order Cart`}
+          </button>
+
           {pricedAt && (
             <button
               type="button"
@@ -1106,6 +1233,12 @@ export default function ProductPriceTable({
                   ? "Add to basket"
                   : `Add ${selected.length} to basket`}
             </button>
+          )}
+
+          {cartResult && (
+            <span role="status" className="text-[12px] text-ink-soft">
+              {cartResult}
+            </span>
           )}
         </div>
       </div>
@@ -1139,10 +1272,6 @@ export default function ProductPriceTable({
       )}
 
       {/* ---- Phones ---- */}
-      {/* A CARD PER PRODUCT rather than the table with smaller type. Five
-          supplier columns need 760px and a phone has half of it; the card
-          leads with the winner this table already picked and folds the losing
-          quotes away. Same rows, same winner, same Add. */}
       <div className="divide-y divide-line lg:hidden">
         {views.map((view) => (
           <SearchRowCard
@@ -1150,7 +1279,6 @@ export default function ProductPriceTable({
             view={view}
             columns={columns}
             picked={picked.has(view.row.key)}
-            blockedFromSelection={alreadyOnAnOrder(view.row)}
             onPick={(checked) =>
               setPicked((current) => {
                 const next = new Set(current);
@@ -1164,6 +1292,12 @@ export default function ProductPriceTable({
             }
             adding={adding}
             onAdd={() => void addRow(view.row)}
+            cartSource={cartSource}
+            cartLineBusy={cartLineBusyKey === view.row.key}
+            onCartAdded={(line) => setCartLineFor(view.row.key, line)}
+            onCartLineQuantityChange={(line, next) =>
+              void changeCartLineQuantity(view.row.key, line, next)
+            }
           />
         ))}
       </div>
@@ -1183,19 +1317,21 @@ export default function ProductPriceTable({
                 </th>
               ))}
               <th className="px-3 py-2 text-left font-medium">Qty</th>
-              <th className="px-3 py-2 text-left font-medium">Cart</th>
+              {/* TWO DESTINATIONS, AND THEY ARE NOT THE SAME THING. */}
+              <th className="px-3 py-2 text-left font-medium">Order cart</th>
+              <th className="px-3 py-2 text-left font-medium">Basket</th>
             </tr>
           </thead>
 
           <tbody>
-            {views.map(({ row, quantity, state, canOrder, identity, link }) => {
+            {views.map(({ row, quantity, state, canOrder, identity, link, cartLine }) => {
               return (
                 <tr key={row.key} className="border-b border-line last:border-0">
                   <td className="px-2 py-2.5 align-top">
                     <input
                       type="checkbox"
                       checked={picked.has(row.key)}
-                      disabled={!canOrder || state !== undefined || alreadyOnAnOrder(row)}
+                      disabled={!(Boolean(row.ean) || Boolean(identityOf(row)?.sku))}
                       aria-label={`Select ${row.name}`}
                       onChange={(event) =>
                         setPicked((current) => {
@@ -1216,9 +1352,6 @@ export default function ProductPriceTable({
                         <div className="text-ink">{identity?.name ?? row.name}</div>
                         <div className="text-[11.5px] text-ink-faint">
                           {row.brand && `${row.brand} · `}
-                          {/* The WINNER's barcode. The row is grouped on one, but
-                              a supplier's own spelling of it is the one that
-                              works on that supplier's site. */}
                           {(identity?.ean ?? row.ean) && (
                             <span className="nums">EAN {identity?.ean ?? row.ean}</span>
                           )}
@@ -1249,7 +1382,6 @@ export default function ProductPriceTable({
                         className={`px-3 py-2.5 text-right ${isBest ? "bg-good-50/60" : ""}`}
                       >
                         {!offer ? (
-                          // This supplier does not stock it.
                           <span className="text-ink-faint">—</span>
                         ) : (
                           <OfferPrice offer={offer} supplierId={supplierId} isBest={isBest} />
@@ -1258,27 +1390,61 @@ export default function ProductPriceTable({
                     );
                   })}
 
+                  {/* ONE STEPPER, TWO MEANINGS — see the phone card for the
+                      full reasoning. Once the row is on the order cart, this
+                      number IS that line's own quantity, live. */}
                   <td className="px-3 py-2.5">
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
-                        disabled={quantity <= 1}
-                        onClick={() => setQty((c) => ({ ...c, [row.key]: quantity - 1 }))}
-                        aria-label={`Decrease ${row.name}`}
+                        disabled={cartLine ? cartLineBusyKey === row.key : quantity <= 1}
+                        onClick={() =>
+                          cartLine
+                            ? void changeCartLineQuantity(row.key, cartLine, cartLine.cases - 1)
+                            : setQty((c) => ({ ...c, [row.key]: quantity - 1 }))
+                        }
+                        aria-label={
+                          cartLine
+                            ? cartLine.cases <= 1
+                              ? `Remove ${row.name} from the order cart`
+                              : `Fewer ${row.name} in the order cart`
+                            : `Decrease ${row.name}`
+                        }
                         className="h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
                       >
-                        −
+                        {cartLine && cartLine.cases <= 1 ? "🗑" : "−"}
                       </button>
-                      <span className="w-7 text-center tabular-nums text-ink">{quantity}</span>
+                      <span className="w-7 text-center tabular-nums text-ink">
+                        {cartLine ? cartLine.cases : quantity}
+                      </span>
                       <button
                         type="button"
-                        onClick={() => setQty((c) => ({ ...c, [row.key]: quantity + 1 }))}
-                        aria-label={`Increase ${row.name}`}
-                        className="h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas"
+                        disabled={cartLine ? cartLineBusyKey === row.key : false}
+                        onClick={() =>
+                          cartLine
+                            ? void changeCartLineQuantity(row.key, cartLine, cartLine.cases + 1)
+                            : setQty((c) => ({ ...c, [row.key]: quantity + 1 }))
+                        }
+                        aria-label={cartLine ? `More ${row.name} in the order cart` : `Increase ${row.name}`}
+                        className="h-6 w-6 rounded border border-line text-[13px] leading-none text-ink-soft hover:bg-canvas disabled:opacity-40"
                       >
                         ＋
                       </button>
                     </div>
+                  </td>
+
+                  {/* NOT GATED ON A LIVE PRICE, unlike the basket beside it. */}
+                  <td className="px-3 py-2.5">
+                    {cartLine ? (
+                      <OrderCartBadge />
+                    ) : (
+                      <AddToOrderCartButton
+                        item={asCartItem(row, identity, quantity)}
+                        source={cartSource}
+                        size="compact"
+                        onAdded={(line) => setCartLineFor(row.key, line)}
+                      />
+                    )}
                   </td>
 
                   <td className="px-3 py-2.5">

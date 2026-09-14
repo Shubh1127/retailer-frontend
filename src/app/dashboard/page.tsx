@@ -766,11 +766,11 @@ export default function DashboardPage() {
             📷 Scan
           </Link>
           <Link
-            href="/orders"
+            href="/order-cart"
             className="inline-flex items-center gap-2 rounded-md bg-teal-600 px-3.5 py-2 text-[13px] font-medium text-white hover:bg-teal-700"
           >
             <UploadIcon />
-            Build an order list
+            Build an order cart
           </Link>
         </div>
       </div>

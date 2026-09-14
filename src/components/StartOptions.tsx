@@ -16,7 +16,7 @@
  *
  *   scan     -> /scan          a product in your hand, into the virtual cart
  *   barcode  -> /product-search  a number, and the question "who stocks this"
- *   sheet    -> /orders        a week's order, reviewed before it is sent
+ *   sheet    -> /order-cart    a week's order, reviewed before it is sent
  *
  * The middle one used to hand off to /scan, which was wrong: typing a barcode
  * is a lookup, not a scan. Somebody at a desk with a number on a note wants to
@@ -209,11 +209,11 @@ export default function StartOptions() {
       >
         <button
           type="button"
-          onClick={() => router.push("/orders")}
+          onClick={() => router.push("/order-cart")}
           className="flex w-full items-center justify-center gap-1.5 rounded-md border border-teal-600 px-3.5 py-2 text-[13px] font-medium text-teal-700 hover:bg-teal-50"
         >
           <Icon name="upload" size={16} />
-          Build an order list
+          Build an order cart
         </button>
       </Box>
     </div>
