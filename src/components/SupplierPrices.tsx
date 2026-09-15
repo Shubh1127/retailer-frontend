@@ -20,13 +20,14 @@
  * a buyer needs to know.
  */
 
-import { eur, type ReadyToOrderRow } from "@/lib/api/jobs";
+import { eur, packOf, type ReadyToOrderRow } from "@/lib/api/jobs";
 import StockLine from "@/components/StockLine";
 import {
   displaySupplierId,
   sameDisplaySupplier,
   supplierLabel,
 } from "@/lib/api/cart";
+import { bySupplierOrder } from "@/lib/suppliers";
 
 export interface SupplierColumn {
   id: string;
@@ -60,11 +61,14 @@ export function supplierColumns(rows: readonly ReadyToOrderRow[]): SupplierColum
     remember(row.bestSupplier, row.bestSupplierName);
   }
 
-  // Alphabetical by name — a stable order matters more than which order, since
-  // columns jumping between renders is worse than any particular arrangement.
-  return [...byId.entries()]
-    .map(([id, name]) => ({ id, name }))
-    .sort((a, b) => a.name.localeCompare(b.name));
+  // ALWAYS Musgrave, then O'Reilly, then Barry, then Kadona — whichever of
+  // them are actually connected — so a buyer scanning down the same column
+  // across two jobs, or between this table and the order cart, finds the
+  // same supplier in the same place every time. See `lib/suppliers`.
+  return bySupplierOrder(
+    [...byId.entries()].map(([id, name]) => ({ id, name })),
+    (column) => column.id,
+  );
 }
 
 /**
@@ -130,13 +134,22 @@ export function SupplierPriceCell({
             : undefined
       }
     >
-      {eur(price)}
-      {!isChosen && delta > 0 && (
-        <span className="ml-1 text-[11px] text-ink-faint">
-          +{eur(delta)}
-        </span>
+      <div>
+        {eur(price)}
+        {!isChosen && delta > 0 && (
+          <span className="ml-1 text-[11px] text-ink-faint">
+            +{eur(delta)}
+          </span>
+        )}
+      </div>
+      {/* THIS SUPPLIER'S OWN PACK, under their own price. Two suppliers can
+          answer the same request with different case sizes, and a buyer
+          comparing raw numbers across the row needs to know which price is
+          for what before the cheaper one means anything. */}
+      {offer && (
+        <div className="text-[11px] font-normal text-ink-faint">{packOf(offer)}</div>
       )}
-      {/* UNDER THE PRICE. A cheaper cell that is not the winner is usually a
+      {/* UNDER THE PACK. A cheaper cell that is not the winner is usually a
           margin decision; when this says "out of stock" it is the reason, and
           without it the column reads as the matcher ignoring a saving. */}
       <StockLine

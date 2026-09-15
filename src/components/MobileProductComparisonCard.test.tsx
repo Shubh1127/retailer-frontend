@@ -220,7 +220,10 @@ describe("adding", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /Add 3 to O'Reilly/ }));
 
-    expect(addOne).toHaveBeenCalledWith("oreilly", "035885", 3, "SMARTIES HEXATUBE");
+    expect(addOne).toHaveBeenCalledWith("oreilly", "035885", 3, "SMARTIES HEXATUBE", {
+      gtin14: "A-7",
+      articleCode: "A-7",
+    });
   });
 
   it("offers no Add button once the line is in the basket", () => {

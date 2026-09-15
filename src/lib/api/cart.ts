@@ -97,6 +97,21 @@ export interface AddItemRequest {
   quantity: number;
   unit?: string;
   name?: string;
+  /**
+   * Whatever this caller knows about the product's OWN identity — a barcode,
+   * an EPOS article code, or the raw scanned code — as distinct from `sku`,
+   * which is the SUPPLIER's code for it.
+   *
+   * Not sent to the supplier. The backend uses it, alongside `sku`, to find
+   * and remove the matching line on the central order cart — the same
+   * identity rule (barcode, then article code, then supplier SKU) the cart
+   * itself keys a product by, so a product added here by its barcode is still
+   * found even though this route only ever knew it as a supplier SKU before.
+   */
+  gtin14?: string;
+  articleCode?: string;
+  scannedCode?: string;
+  isSingle?: boolean;
 }
 
 function url(path: string): string {

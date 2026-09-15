@@ -98,6 +98,13 @@ export interface CartState {
     sku: string,
     quantity: number,
     name?: string,
+    /**
+     * Whatever this row's OWN identity is — a barcode or an EPOS article
+     * code — as distinct from `sku`, the supplier's own code. Passed through
+     * so the backend can find and remove the matching line on the central
+     * order cart once this add succeeds; see `AddItemRequest`.
+     */
+    identity?: { gtin14?: string; articleCode?: string },
   ) => Promise<void>;
   lineFor: (supplier: string, sku: string) => SupplierBasket["bySku"][string] | undefined;
   /**
@@ -332,12 +339,26 @@ export function useCart(jobId?: string): CartState {
   );
 
   const addOne = useCallback(
-    async (supplier: CartSupplier, sku: string, quantity: number, name?: string) => {
+    async (
+      supplier: CartSupplier,
+      sku: string,
+      quantity: number,
+      name?: string,
+      identity?: { gtin14?: string; articleCode?: string },
+    ) => {
       // Keyed on the SKU, not a basketItemId — the line does not exist yet.
       setBusyKey(`${supplier}:${sku}`);
       try {
         const outcome = await addItems(
-          [{ sku, quantity, ...(name ? { name } : {}) }],
+          [
+            {
+              sku,
+              quantity,
+              ...(name ? { name } : {}),
+              ...(identity?.gtin14 ? { gtin14: identity.gtin14 } : {}),
+              ...(identity?.articleCode ? { articleCode: identity.articleCode } : {}),
+            },
+          ],
           supplier,
           jobId,
         );
@@ -618,7 +639,15 @@ export function CartCell({
         <button
           type="button"
           disabled={isBusy || cart.isLoading || !basketReady}
-          onClick={() => void cart.addOne(supplier, sku, cases, row.product)}
+          onClick={() =>
+            void cart.addOne(
+              supplier,
+              sku,
+              cases,
+              row.product,
+              row.articleCode ? { gtin14: row.articleCode, articleCode: row.articleCode } : undefined,
+            )
+          }
           className={
             mobile
               ? "w-full rounded-md border border-teal-600 px-3 py-2.5 text-[13px] font-medium text-teal-700 hover:bg-teal-50 disabled:opacity-40"
@@ -1043,6 +1072,7 @@ export function CartBar({
             sku: row.detail.selected!.sku!,
             quantity: row.cases,
             name: row.product,
+            ...(row.articleCode ? { gtin14: row.articleCode, articleCode: row.articleCode } : {}),
           })),
           supplier,
           jobId,

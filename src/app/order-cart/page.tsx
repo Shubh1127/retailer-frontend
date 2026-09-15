@@ -322,7 +322,10 @@ export default function OrderCartPage() {
   }, [router, gate, currentSignature]);
 
   const addAllToBaskets = useCallback(async () => {
-    const bySupplier = new Map<string, { sku: string; quantity: number; name?: string }[]>();
+    const bySupplier = new Map<
+      string,
+      { sku: string; quantity: number; name?: string; gtin14?: string; articleCode?: string; scannedCode?: string; isSingle?: boolean }[]
+    >();
     // Only the rows currently loaded are actionable here — the button is
     // explicitly page-scoped.
     const targetLines = lines;
@@ -338,6 +341,12 @@ export default function OrderCartPage() {
         sku: priced.best.supplierSku,
         quantity,
         ...(line.description ? { name: line.description } : {}),
+        // The line's OWN identity, so the backend can find and remove this
+        // same line from the central cart once the add succeeds.
+        ...(line.gtin14 ? { gtin14: line.gtin14 } : {}),
+        ...(line.articleCode ? { articleCode: line.articleCode } : {}),
+        ...(line.scannedCode ? { scannedCode: line.scannedCode } : {}),
+        ...(line.isSingle ? { isSingle: true } : {}),
       });
       bySupplier.set(priced.best.supplierId, items);
     }
@@ -397,6 +406,10 @@ export default function OrderCartPage() {
               sku: priced.best.supplierSku,
               quantity,
               ...(line.description ? { name: line.description } : {}),
+              ...(line.gtin14 ? { gtin14: line.gtin14 } : {}),
+              ...(line.articleCode ? { articleCode: line.articleCode } : {}),
+              ...(line.scannedCode ? { scannedCode: line.scannedCode } : {}),
+              ...(line.isSingle ? { isSingle: true } : {}),
             },
           ],
           priced.best.supplierId as CartSupplier,
@@ -550,7 +563,7 @@ export default function OrderCartPage() {
             disabled={busy !== null || !basketReady}
             className="rounded-md border border-teal-600 px-3.5 py-2 text-[13px] font-medium text-teal-700 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            {busy === "add" ? "Adding…" : "Add this page to baskets"}
+            {busy === "add" ? "Adding…" : "Add all to baskets"}
           </button>
         </div>
       </div>

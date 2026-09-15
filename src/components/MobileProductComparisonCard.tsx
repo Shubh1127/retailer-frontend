@@ -39,6 +39,7 @@ import { cheapestOffer, type SupplierColumn } from "@/components/SupplierPrices"
 import { sameDisplaySupplier } from "@/lib/api/cart";
 import {
   eur,
+  packOf,
   type ReadyToOrderRow,
   type RowDecision,
   type RowVerification,
@@ -240,6 +241,12 @@ export default function MobileProductComparisonCard({
             {row.product}
           </h3>
 
+          {/* What the FILE itself asked for — never a supplier's pack. See
+              `requestedPack` in dashboardPipeline.service.ts. */}
+          {row.detail.requestedPack && (
+            <p className="mt-0.5 text-[11.5px] text-ink-faint">{row.detail.requestedPack}</p>
+          )}
+
           {selected?.product && (
             <p className="mt-0.5 break-words text-[12.5px] leading-snug text-ink-soft">
               {selected.product}
@@ -255,6 +262,18 @@ export default function MobileProductComparisonCard({
             {selected?.sku && " · "}
             <span className="tabular-nums">Row {row.row}</span>
           </p>
+
+          {/* The SELECTED SUPPLIER's own pack — their catalogue's case size,
+              not the file's. */}
+          {selected && packOf(selected) !== "—" && (
+            <p className="mt-0.5 text-[11.5px] text-ink-faint">{packOf(selected)}</p>
+          )}
+
+          {/* The selected product's own barcode, plainly — distinct from the
+              cross-supplier confirmation badge below. */}
+          {selected?.ean && (
+            <p className="mt-0.5 text-[11.5px] text-ink-faint">EAN {selected.ean}</p>
+          )}
         </div>
 
         {onOpenDetail && (

@@ -20,6 +20,7 @@ import {
   eur,
   getJobRows,
   confirmedOverReadyRow,
+  packOf,
   removedAsAttentionRow,
   settledAsReadyRow,
   verifyJobRows,
@@ -732,7 +733,17 @@ export default function JobDetailsPage({
                         <td className="px-3 py-2 tabular-nums text-ink-faint">
                           {row.row}
                         </td>
-                        <td className="px-3 py-2 text-ink">{row.product}</td>
+                        <td className="px-3 py-2 text-ink">
+                          {row.product}
+                          {/* What the FILE itself asked for — "24 X 330ML" as
+                              typed in the upload, never a supplier's pack. See
+                              `requestedPack` in dashboardPipeline.service.ts. */}
+                          {row.detail.requestedPack && (
+                            <div className="text-[11.5px] text-ink-faint">
+                              {row.detail.requestedPack}
+                            </div>
+                          )}
+                        </td>
                         <td className="px-3 py-2 text-ink-soft">
                           {/* The supplier's own picture of what will actually be
                               ordered, beside the product it belongs to. */}
@@ -745,11 +756,59 @@ export default function JobDetailsPage({
                               size={36}
                             />
                             <div className="min-w-0">
-                              {row.detail.selected?.product ?? "—"}
-                              {row.detail.selected?.sku && (
-                                <span className="ml-1 text-[11.5px] text-ink-faint">
-                                  SKU {row.detail.selected.sku}
-                                </span>
+                              <div>
+                                {row.detail.selected?.product ?? "—"}
+                                {row.detail.selected?.sku && (
+                                  <span className="ml-1 text-[11.5px] text-ink-faint">
+                                    SKU {row.detail.selected.sku}
+                                  </span>
+                                )}
+                              </div>
+                              {/* The SELECTED SUPPLIER's own pack — their
+                                  catalogue's case size, not the file's. Two
+                                  suppliers can quote different packs for the
+                                  same request, and this is what the winning
+                                  one actually ships. */}
+                              {row.detail.selected && packOf(row.detail.selected) !== "—" && (
+                                <div className="text-[11.5px] text-ink-faint">
+                                  {packOf(row.detail.selected)}
+                                </div>
+                              )}
+                              {/* The selected product's own barcode, plainly —
+                                  distinct from the cross-supplier confirmation
+                                  badge below, which is an IDENTITY claim rather
+                                  than a fact about this one offer. */}
+                              {row.detail.selected?.ean && (
+                                <div className="text-[11.5px] text-ink-faint">
+                                  EAN {row.detail.selected.ean}
+                                </div>
+                              )}
+                              {/* Identity, not pack — see the dashboard's own
+                                  panel for the full explanation. Shown here in
+                                  the same words so one fact reads the same way
+                                  wherever it appears. */}
+                              {row.eanConfirmed && (
+                                <div
+                                  className="mt-0.5 inline-flex items-center gap-1 rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] text-emerald-700"
+                                  title={
+                                    `Barcode ${row.eanConfirmed.gtin14} confirmed at ` +
+                                    `${
+                                      row.eanConfirmed.suppliers.length === 2
+                                        ? "both suppliers"
+                                        : `${row.eanConfirmed.suppliers.length} suppliers`
+                                    }:\n` +
+                                    row.eanConfirmed.suppliers
+                                      .map(
+                                        (entry) =>
+                                          `${supplierLabel(entry.supplier)}: ${entry.sku ?? "no code"}` +
+                                          (entry.ean ? ` (EAN ${entry.ean})` : ""),
+                                      )
+                                      .join("\n") +
+                                    `\n\nIdentity only — pack sizes can still differ.`
+                                  }
+                                >
+                                  ✓ Barcode confirmed
+                                </div>
                               )}
                             </div>
                           </div>
