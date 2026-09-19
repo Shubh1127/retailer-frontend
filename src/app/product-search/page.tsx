@@ -206,8 +206,8 @@ function ProductSearch() {
           <h1 className="text-[22px] font-semibold tracking-tight text-ink">Product search</h1>
           <p className="mt-1 text-[13.5px] text-ink-soft">
             {status === "done" && listingCount > 0
-              ? `${listingCount} listing${listingCount === 1 ? "" : "s"} for "${searched}" · prices ex-VAT per case, fetched when you ask`
-              : "Find one product, see who stocks it, then fetch each supplier's live price"}
+              ? `${listingCount} listing${listingCount === 1 ? "" : "s"} for "${searched}" · prices ex-VAT per case`
+              : ""}
           </p>
         </div>
       </div>

@@ -449,10 +449,13 @@ function SearchRowCard({
           </div>
         </div>
       ) : (
-        <div className="mt-3 rounded-lg border border-line bg-canvas px-3 py-2.5 text-[12.5px] text-ink-soft">
-          No live price yet. Press &ldquo;Fetch live prices&rdquo; above to compare{" "}
-          {row.offers.size} supplier{row.offers.size === 1 ? "" : "s"}.
+        <div>
+          
         </div>
+        // <div className="mt-3 rounded-lg border border-line bg-canvas px-3 py-2.5 text-[12.5px] text-ink-soft">
+        //   No live price yet. Press &ldquo;Fetch live prices&rdquo; above to compare{" "}
+        //   {row.offers.size} supplier{row.offers.size === 1 ? "" : "s"}.
+        // </div>
       )}
 
       {/* ---- The quotes that lost, folded away ----------------------------- */}
@@ -1179,7 +1182,7 @@ export default function ProductPriceTable({
               · {orderable.length} orderable
             </>
           ) : (
-            "No supplier has been contacted. Prices appear when you ask for them."
+              " "
           )}
         </p>
 
