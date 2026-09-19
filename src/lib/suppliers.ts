@@ -81,17 +81,3 @@ export const SUPPLIER_COLUMNS: readonly { label: string; ids: readonly string[] 
   { label: "Barry Group", ids: ["barrygroup-ambient", "barrygroup-chill"] },
   { label: "Kadona", ids: ["kadona"] },
 ];
-
-/**
- * A stable accent per wholesaler, for the dot beside its name.
- *
- * Deliberately NOT the status palette — these say "which supplier", never
- * "good" or "bad". Reusing good/warn here would make Musgrave look like a pass
- * and Kadona like a warning on a screen where every row is neutral.
- */
-export const SUPPLIER_ACCENTS: Readonly<Record<string, string>> = {
-  Musgrave: "#0F766E",
-  "O'Reilly": "#D97706",
-  "Barry Group": "#059669",
-  Kadona: "#3A4048",
-};

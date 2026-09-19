@@ -41,33 +41,43 @@
  * products does not play 214 entrances. The animation is for the CHANGE, not
  * for the page.
  *
+ * ── NO PRICING FROM A PHONE ─────────────────────────────────────────────────
+ *
+ * Neither "Fetch live prices" nor "Compare prices" appears here. Both are the
+ * calls that contact suppliers — seconds per wholesaler for a quick quote,
+ * minutes and a background job for a full comparison — and both are run from
+ * the desk, on the wide screen that has room for the four supplier columns the
+ * answer arrives in.
+ *
+ * Prices are still SHOWN when they exist: they travel with the cart, so a line
+ * priced at the desk reads "Priced 14:20" here and the sheet lists what each
+ * wholesaler charged. This screen reports prices; it does not ask for them.
+ *
+ * REMOVED RATHER THAN DISABLED. A control that can only be greyed out is
+ * furniture — it teaches people to read past the screen rather than along it,
+ * and it takes the width of two real buttons to say nothing.
+ *
  * ── WHAT IS NOT HERE, AND WHY ───────────────────────────────────────────────
  *
  * "Move to list" from the mockup's bulk bar has no backend: a line's sources
  * are recorded as a fact about where it came from, not a folder it can be
- * moved between. Selection-scoped "Compare" has none either — `compareOrderCart`
- * takes no arguments and runs the entire cart, so a button on a two-line
- * selection would start a job over all 214 and say nothing about it.
+ * moved between.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
 
 import ConfirmDialog from "@/components/ConfirmDialog";
 import ProductDetailSheet from "@/components/ProductDetailSheet";
 import ProductThumb from "@/components/ProductThumb";
 import { usePagination } from "@/components/Pagination";
-import { useSupplierGate } from "@/components/SupplierGate";
-import { ApiError } from "@/lib/api/client";
 import { toBase64 } from "@/lib/fileEncoding";
 import { cacheKeys } from "@/lib/sessionCache";
 import { useCartEnrichment, withEnrichment } from "@/lib/useCartEnrichment";
 import { useCachedResource } from "@/lib/useCachedResource";
 import {
-  compareOrderCart,
-  fetchOrderCartPrices,
+  clearOrderList,
   getOrderList,
   importOrderListCsv,
   importOrderListEpos,
@@ -130,7 +140,6 @@ function haystack(line: OrderListLine): string {
 // ---------------------------------------------------------------------------
 
 export default function MobileOrderCart() {
-  const router = useRouter();
   const fileInput = useRef<HTMLInputElement>(null);
   const searchInput = useRef<HTMLInputElement>(null);
 
@@ -148,6 +157,7 @@ export default function MobileOrderCart() {
   const [selection, setSelection] = useState<Set<number> | null>(null);
   const [openLineId, setOpenLineId] = useState<number | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<number[] | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
 
   /**
    * ── THE CART, REMEMBERED FOR THE LENGTH OF THIS TAB ───────────────────────
@@ -297,6 +307,40 @@ export default function MobileOrderCart() {
     [],
   );
 
+  /**
+   * Empty the whole cart.
+   *
+   * NOT JUST THIS PAGE, and not just this filter — `clearOrderList` removes
+   * every line whatever its origin, which is why the confirmation says so in
+   * words rather than leaving a buyer to infer it from a bin icon.
+   *
+   * The derived state goes with it: prices belong to lines that no longer
+   * exist, and so does the claim that this cart has been compared.
+   */
+  const emptyCart = useCallback(async () => {
+    setBusy("clear");
+    setError(null);
+    try {
+      setCart(await clearOrderList());
+      setPrices({});
+      /**
+       * The compared-cart flag is SHARED WITH THE DESKTOP VIEW, which disables
+       * its Compare button while the flag matches the current cart. Emptying
+       * here and leaving it behind would show "Compared" over an empty cart the
+       * next time the same account opened it on a wide screen.
+       */
+      window.localStorage.removeItem("retailcompare:compared-cart");
+      setSelection(null);
+      setOpenLineId(null);
+      setNotice("Cart emptied");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not empty the cart");
+    } finally {
+      setBusy(null);
+      setConfirmClear(false);
+    }
+  }, [setCart]);
+
   const onFile = useCallback(async (file: File) => {
     setBusy("import");
     setError(null);
@@ -313,48 +357,6 @@ export default function MobileOrderCart() {
       setBusy(null);
     }
   }, []);
-
-  const gate = useSupplierGate();
-
-  const compare = useCallback(async () => {
-    if (!gate.guard()) return;
-    setBusy("compare");
-    setError(null);
-    try {
-      const { jobId } = await compareOrderCart();
-      router.push(`/jobs/${encodeURIComponent(jobId)}`);
-    } catch (err) {
-      setError(
-        err instanceof ApiError || err instanceof Error
-          ? err.message
-          : "Could not start the comparison",
-      );
-      setBusy(null);
-    }
-  }, [gate, router]);
-
-  const fetchPrices = useCallback(async () => {
-    if (!gate.guard()) return;
-    setBusy("prices");
-    setError(null);
-    setNotice(null);
-    try {
-      const { prices: result } = await fetchOrderCartPrices();
-      setPrices((current) => {
-        const next = { ...current };
-        for (const line of result.lines) next[line.lineId] = line;
-        return next;
-      });
-      setNotice(
-        `${result.pricedSkus} of ${result.requestedSkus} supplier products quoted` +
-          (result.skippedLines > 0 ? ` · ${result.skippedLines} already up to date` : ""),
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not fetch prices");
-    } finally {
-      setBusy(null);
-    }
-  }, [gate]);
 
   // ── What the chips count, and what the list shows ────────────────────────
 
@@ -418,8 +420,6 @@ export default function MobileOrderCart() {
 
   return (
     <div className="lg:hidden">
-      {gate.modal}
-
       {/* ── Header ──────────────────────────────────────────────────────────
           In select mode the title becomes the count and the only way out is
           Cancel, so a half-made selection can never be lost to a stray tap. */}
@@ -446,13 +446,37 @@ export default function MobileOrderCart() {
               </span>
             </h1>
             {lines.length > 0 && (
-              <button
-                type="button"
-                onClick={() => setSelection(new Set())}
-                className="text-[13.5px] font-medium text-link"
-              >
-                Select
-              </button>
+              <div className="flex shrink-0 items-center gap-1">
+                {/*
+                  INBOARD OF SELECT, not at the screen edge. The edge is where a
+                  thumb lands by default and where a mis-tap is most likely, and
+                  of the two controls this is the one that empties a week's
+                  order. It is an icon because the header has room for one word
+                  and "Select" earned it — the confirmation carries the meaning.
+                */}
+                <motion.button
+                  type="button"
+                  onClick={() => setConfirmClear(true)}
+                  disabled={busy !== null}
+                  aria-label="Empty cart"
+                  title="Empty cart"
+                  whileTap={{ scale: 0.9 }}
+                  transition={{ duration: 0.12 }}
+                  className="flex h-11 w-11 items-center justify-center rounded-xl text-ink-faint hover:bg-canvas hover:text-red-600 disabled:opacity-40"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6M10 11v5M14 11v5" />
+                  </svg>
+                </motion.button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelection(new Set())}
+                  className="min-h-11 px-1 text-[13.5px] font-medium text-link"
+                >
+                  Select
+                </button>
+              </div>
             )}
           </>
         )}
@@ -658,41 +682,15 @@ export default function MobileOrderCart() {
         </div>
       )}
 
-      {/* ── The two price actions ───────────────────────────────────────────
-          Not sticky: the bottom of a phone already belongs to the tab bar, and
-          a second fixed bar above it eats a third of the list. */}
+      {/* ── What is in the cart ─────────────────────────────────────────────
+          The counts only. Pricing is not asked for from a phone — see the
+          note at the top of this file. */}
       {!loading && lines.length > 0 && !selection && (
-        <>
-          <div className="mt-4 grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => void fetchPrices()}
-              disabled={busy !== null}
-              className="min-h-11 rounded-xl border border-line bg-surface px-3 text-[13.5px] font-medium text-ink hover:bg-canvas disabled:opacity-50"
-            >
-              {busy === "prices" ? "Fetching…" : "Fetch live prices"}
-            </button>
-            <button
-              type="button"
-              onClick={() => void compare()}
-              disabled={busy !== null}
-              className="min-h-11 rounded-xl bg-teal-600 px-3 text-[13.5px] font-semibold text-white hover:bg-teal-700 disabled:opacity-50"
-            >
-              {busy === "compare" ? "Starting…" : "Compare prices"}
-            </button>
-          </div>
-
-          <p className="mt-2.5 text-center text-[11.5px] text-ink-faint">
-            {visible.length === lines.length
-              ? `${lines.length} product${lines.length === 1 ? "" : "s"} · ${totalCases} case${totalCases === 1 ? "" : "s"}`
-              : `${visible.length} of ${lines.length} products match · ${totalCases} case${totalCases === 1 ? "" : "s"} in the cart`}
-          </p>
-
-          <p className="mt-1 text-center text-[11.5px] leading-snug text-ink-faint">
-            Both run over the whole cart, not just what is filtered here, and neither puts
-            anything into a supplier&apos;s basket.
-          </p>
-        </>
+        <p className="mt-4 text-center text-[11.5px] text-ink-faint">
+          {visible.length === lines.length
+            ? `${lines.length} product${lines.length === 1 ? "" : "s"} · ${totalCases} case${totalCases === 1 ? "" : "s"}`
+            : `${visible.length} of ${lines.length} products match · ${totalCases} case${totalCases === 1 ? "" : "s"} in the cart`}
+        </p>
       )}
 
       <input
@@ -755,8 +753,35 @@ export default function MobileOrderCart() {
       </AnimatePresence>
 
       <AnimatePresence>
+        {/*
+          KEYED, both of them. `AnimatePresence` tracks its children by key, and
+          two unkeyed conditional siblings are indistinguishable to it: closing
+          one left the other's slot occupied and the dialog never unmounted.
+        */}
+        {confirmClear && (
+          <ConfirmDialog
+            key="confirm-clear"
+            title="Empty your cart?"
+            body={
+              <>
+                All{" "}
+                <span className="font-medium text-ink">
+                  {lines.length} product{lines.length === 1 ? "" : "s"}
+                </span>{" "}
+                will be removed — scanned, imported and searched alike, not just
+                what is shown here. This cannot be undone.
+              </>
+            }
+            confirmLabel="Empty cart"
+            busy={busy === "clear"}
+            onConfirm={() => void emptyCart()}
+            onCancel={() => setConfirmClear(false)}
+          />
+        )}
+
         {pendingRemoval && (
           <ConfirmDialog
+            key="confirm-removal"
             title={pendingRemoval.length === 1 ? "Remove this item?" : `Remove ${pendingRemoval.length} items?`}
             body={
             pendingRemoval.length === 1 ? (

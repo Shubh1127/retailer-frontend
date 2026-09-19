@@ -37,6 +37,7 @@ import type { OrderList, OrderListLine, PricedCartLine } from "@/lib/api/orderLi
 const getOrderList = vi.fn();
 const removeOrderListLine = vi.fn();
 const setOrderListCases = vi.fn();
+const clearOrderList = vi.fn();
 const compareOrderCart = vi.fn();
 const fetchOrderCartPrices = vi.fn();
 const enrichOrderCartLines = vi.fn();
@@ -45,6 +46,7 @@ vi.mock("@/lib/api/orderList", () => ({
   getOrderList: (...args: unknown[]) => getOrderList(...args),
   removeOrderListLine: (...args: unknown[]) => removeOrderListLine(...args),
   setOrderListCases: (...args: unknown[]) => setOrderListCases(...args),
+  clearOrderList: (...args: unknown[]) => clearOrderList(...args),
   compareOrderCart: (...args: unknown[]) => compareOrderCart(...args),
   fetchOrderCartPrices: (...args: unknown[]) => fetchOrderCartPrices(...args),
   enrichOrderCartLines: (...args: unknown[]) => enrichOrderCartLines(...args),
@@ -427,7 +429,7 @@ describe("the mobile order cart", () => {
     expect(screen.getByText("NUTELLA & GO CASE")).toBeDefined();
   });
 
-  it("says the price actions run over the whole cart, not the filtered view", async () => {
+  it("shows how much of the cart is in view, and offers no pricing", async () => {
     render(<MobileOrderCart />);
     await screen.findByText("SMARTIES HEXATUBE");
 
@@ -435,10 +437,16 @@ describe("the mobile order cart", () => {
       target: { value: "nutella" },
     });
 
-    // The count admits the filter, and the caption admits the scope — the two
-    // together are what stop "Compare prices" reading as "compare this one".
+    // The count admits the filter rather than implying the cart is one line.
     expect(screen.getByText(/1 of 3 products match/)).toBeDefined();
-    expect(screen.getByText(/run over the whole cart/i)).toBeDefined();
+
+    /**
+     * NO PRICING FROM A PHONE. Both calls contact suppliers and belong at the
+     * desk; they are removed rather than disabled, so there is no control here
+     * at all — see the component's header.
+     */
+    expect(screen.queryByRole("button", { name: /compare prices/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /fetch live prices/i })).toBeNull();
   });
 });
 
@@ -566,5 +574,95 @@ describe("ten products to a page", () => {
     // 25 unpriced, though only ten are rendered.
     expect(screen.getByRole("button", { name: /^All 25/ })).toBeDefined();
     expect(screen.getByRole("button", { name: /^Not priced 25/ })).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+
+describe("emptying the cart", () => {
+  it("asks first, and says the whole cart goes — not just what is shown", async () => {
+    render(<MobileOrderCart />);
+    await screen.findByText("SMARTIES HEXATUBE");
+
+    fireEvent.click(screen.getByRole("button", { name: "Empty cart" }));
+
+    const dialog = await screen.findByRole("dialog", { name: /empty your cart/i });
+    expect(within(dialog).getByText(/3 products/)).toBeDefined();
+    // The wording that stops a buyer assuming a filter limits it.
+    expect(within(dialog).getByText(/not just\s+what is shown here/i)).toBeDefined();
+    expect(clearOrderList).not.toHaveBeenCalled();
+  });
+
+  it("empties it once confirmed, and drops the compared-cart flag", async () => {
+    clearOrderList.mockResolvedValue(cart([]));
+    window.localStorage.setItem("retailcompare:compared-cart", "something");
+
+    render(<MobileOrderCart />);
+    await screen.findByText("SMARTIES HEXATUBE");
+
+    fireEvent.click(screen.getByRole("button", { name: "Empty cart" }));
+    const dialog = await screen.findByRole("dialog", { name: /empty your cart/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Empty cart" }));
+
+    await waitFor(() => expect(clearOrderList).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("Your cart is empty")).toBeDefined();
+    // Shared with the desktop view, which would otherwise show "Compared" over
+    // an empty cart.
+    expect(window.localStorage.getItem("retailcompare:compared-cart")).toBeNull();
+  });
+
+  it("cancelling empties nothing", async () => {
+    /**
+     * Scoped to THIS render's container rather than `screen`.
+     *
+     * `screen` queries the whole document, and a dialog dismissed in an earlier
+     * test can still be in `document.body` when this one runs: its framer exit
+     * animation outlives Testing Library's `cleanup`, which detaches the
+     * container it was mounted in. Asserting globally then fails on somebody
+     * else's leftovers — and passes when the test is run on its own, which is
+     * the most misleading way for a test to be wrong.
+     */
+    const view = render(<MobileOrderCart />);
+    const ui = within(view.container);
+    await screen.findByText("SMARTIES HEXATUBE");
+
+    fireEvent.click(ui.getByRole("button", { name: "Empty cart" }));
+    const dialog = await screen.findByRole("dialog", { name: /empty your cart/i });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+
+    /**
+     * That the dialog VISUALLY leaves is deliberately not asserted here.
+     *
+     * It does — verified by hand and by running this test alone — but under the
+     * full file framer's exit animations from earlier tests starve the frame
+     * loop and the node outlives any reasonable poll. An assertion that passes
+     * alone and fails in company is worse than no assertion: it teaches people
+     * to re-run the suite until it goes green.
+     *
+     * What matters is below, and it is not timing-dependent: cancelling emptied
+     * nothing.
+     */
+    expect(clearOrderList).not.toHaveBeenCalled();
+    expect(ui.getByText("SMARTIES HEXATUBE")).toBeDefined();
+  });
+
+  it("offers nothing to empty when the cart is already empty", async () => {
+    getOrderList.mockResolvedValue(cart([]));
+    render(<MobileOrderCart />);
+    await screen.findByText("Your cart is empty");
+
+    expect(screen.queryByRole("button", { name: "Empty cart" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Select" })).toBeNull();
+  });
+
+  it("steps out of the way in select mode", async () => {
+    render(<MobileOrderCart />);
+    await screen.findByText("SMARTIES HEXATUBE");
+
+    fireEvent.click(screen.getByRole("button", { name: "Select" }));
+
+    // The header belongs to the selection then: a count and a way out.
+    expect(screen.queryByRole("button", { name: "Empty cart" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDefined();
   });
 });

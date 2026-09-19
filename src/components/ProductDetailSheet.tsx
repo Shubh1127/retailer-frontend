@@ -44,7 +44,7 @@ import { motion } from "framer-motion";
 
 import ProductThumb from "@/components/ProductThumb";
 import { eur } from "@/lib/mock-data";
-import { bySupplierOrder, SUPPLIER_ACCENTS, SUPPLIER_COLUMNS } from "@/lib/suppliers";
+import { bySupplierOrder, SUPPLIER_COLUMNS } from "@/lib/suppliers";
 import type { CartOffer, OrderListLine, PricedCartLine } from "@/lib/api/orderList";
 
 /**
@@ -211,15 +211,10 @@ export default function ProductDetailSheet({
             return (
               <li
                 key={column.label}
-                className={`flex min-h-[52px] items-center gap-3 border-b border-line px-4 ${
+                className={`flex min-h-[52px] items-center gap-2 border-b border-line px-4 ${
                   isBest ? "bg-good-50/50" : ""
                 }`}
               >
-                <span
-                  aria-hidden="true"
-                  className="h-6 w-6 shrink-0 rounded-md"
-                  style={{ backgroundColor: SUPPLIER_ACCENTS[column.label] ?? "#3A4048" }}
-                />
                 <span className="min-w-0 flex-1 truncate text-[13.5px] font-medium text-ink">
                   {column.label}
                   {isBest && (
