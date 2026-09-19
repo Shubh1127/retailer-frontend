@@ -118,21 +118,67 @@ export interface SkippedRow {
  * activity. An ordinary load says nothing and counts as presence.
  */
 export async function getOrderList(
-  opts: { passive?: boolean; source?: OrderCartSource; page?: number; pageSize?: number } = {},
+  opts: {
+    passive?: boolean;
+    source?: OrderCartSource;
+    page?: number;
+    pageSize?: number;
+    /**
+     * `"none"` skips catalogue presentation — images, resolved barcodes and
+     * catalogue pack text — and returns the cart as it is stored.
+     *
+     * The order itself is two queries; the pictures cost one lookup per barcode
+     * and one local catalogue search per barcode-less EPOS line, which is what
+     * a retailer was waiting on before seeing a list they had already saved.
+     * A screen that opts out is expected to follow up with
+     * `enrichOrderCartLines` and fill the gaps in as they resolve.
+     */
+    enrich?: "none";
+  } = {},
 ): Promise<OrderList> {
-  const { source, page, pageSize, ...rest } = opts;
+  const { source, page, pageSize, enrich, ...rest } = opts;
+  const params = {
+    ...(source ? { source } : {}),
+    ...(page !== undefined ? { page } : {}),
+    ...(pageSize !== undefined ? { pageSize } : {}),
+    ...(enrich ? { enrich } : {}),
+  };
+
   return apiFetch<OrderList>("/api/order-list", {
     ...rest,
-    ...(source || page !== undefined || pageSize !== undefined
-      ? {
-          params: {
-            ...(source ? { source } : {}),
-            ...(page !== undefined ? { page } : {}),
-            ...(pageSize !== undefined ? { pageSize } : {}),
-          },
-        }
-      : {}),
+    ...(Object.keys(params).length > 0 ? { params } : {}),
   });
+}
+
+/** The catalogue's answer for one cart line: its picture, and what it is. */
+export interface CartLineEnrichment {
+  lineId: number;
+  /** Resolved for an EPOS line that arrived without one. */
+  gtin14?: string;
+  imageUrl?: string;
+  sizeText?: string;
+}
+
+/**
+ * The pictures for SOME of the cart, so a screen can fill them in as it goes.
+ *
+ * BOUNDED AT 50 BY THE SERVER, which refuses a longer list rather than
+ * quietly truncating it. Asking for the whole cart at once would rebuild the
+ * wait this exists to remove, so callers ask in batches and render each one as
+ * it lands.
+ *
+ * Every requested line comes back, including the ones the catalogue knows
+ * nothing about — silence would be indistinguishable from "not yet", and a
+ * caller has no way to stop asking about a product that will never resolve.
+ */
+export async function enrichOrderCartLines(
+  lineIds: readonly number[],
+): Promise<CartLineEnrichment[]> {
+  const { items } = await apiFetch<{ items: CartLineEnrichment[] }>(
+    "/api/order-list/enrichment",
+    { method: "POST", body: { lineIds } },
+  );
+  return items;
 }
 
 /**

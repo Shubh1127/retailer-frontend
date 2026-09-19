@@ -37,6 +37,8 @@ import { useRouter, useSearchParams } from "next/navigation";
 import AppShell from "@/components/AppShell";
 import ProductPriceTable from "@/components/ProductPriceTable";
 import ProductSearchBox from "@/components/ProductSearchBox";
+import { cacheKeys, consumeCache, dropCache, writeCache } from "@/lib/sessionCache";
+import { rememberSearch } from "@/lib/recentSearches";
 import SupplierNotices from "@/components/SupplierNotices";
 import { TableSkeleton } from "@/components/TableSkeleton";
 import { ApiError } from "@/lib/api/client";
@@ -100,8 +102,8 @@ function ProductSearch() {
 
   const abortRef = useRef<AbortController | null>(null);
 
-  const runSearch = useCallback(async () => {
-    const trimmed = query.trim();
+  const runSearch = useCallback(async (term?: string) => {
+    const trimmed = (term ?? query).trim();
     if (!trimmed) return;
 
     // A second search while the first is in flight abandons the first. The
@@ -119,6 +121,14 @@ function ProductSearch() {
       const data = await searchSupplierListings(trimmed, controller.signal);
       setResults(data);
       setStatus("done");
+      /**
+       * Remembered only once it ANSWERED. A search that failed or was abandoned
+       * is not a result worth restoring, and a term that returned nothing is
+       * still a question worth offering back — so the history is written here
+       * and the results beside it.
+       */
+      rememberSearch(trimmed);
+      writeCache(cacheKeys.productSearch, { searched: trimmed, results: data });
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setStatus("error");
@@ -129,6 +139,35 @@ function ProductSearch() {
       );
     }
   }, [query]);
+
+  /**
+   * ── WHAT WAS ON SCREEN LAST TIME, FOR ONE RETURN TRIP ─────────────────────
+   *
+   * Opening a product and coming back should find the results still there;
+   * coming back an hour later should find a fresh, empty search box. So the
+   * entry is CONSUMED — read and deleted in the same breath — and only running
+   * a search writes another. Leaving and returning a second time therefore
+   * starts clean, which is what was asked for.
+   *
+   * Skipped when the URL carries `?q=`, because that is an explicit instruction
+   * to search for something and it outranks whatever was here before.
+   */
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current) return;
+    restored.current = true;
+    if (handedOverQuery) return;
+
+    const previous = consumeCache<{ searched: string; results: SupplierSearchResponse }>(
+      cacheKeys.productSearch,
+    );
+    if (!previous) return;
+
+    setQuery(previous.searched);
+    setSearched(previous.searched);
+    setResults(previous.results);
+    setStatus("done");
+  }, [handedOverQuery]);
 
   /**
    * Run the handed-over query once, on arrival.
@@ -146,6 +185,8 @@ function ProductSearch() {
 
   const clear = () => {
     abortRef.current?.abort();
+    // Cleared on purpose is not the same as left behind: nothing to restore.
+    dropCache(cacheKeys.productSearch);
     // The URL's query goes too, or a refresh would bring back what was cleared.
     // Through the ROUTER, not `history.replaceState`: a bare history call
     // leaves `useSearchParams` still reporting the query it just removed.
@@ -177,7 +218,7 @@ function ProductSearch() {
       <ProductSearchBox
         value={query}
         onChange={setQuery}
-        onSubmit={() => void runSearch()}
+        onSubmit={(term) => void runSearch(term)}
         busy={status === "loading"}
         placeholder="Product name, SKU or barcode — e.g. lucozade, 5054267013926"
         className="mt-4"

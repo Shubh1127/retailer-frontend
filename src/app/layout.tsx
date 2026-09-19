@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import AuthGate from "@/components/AuthGate";
+import MotionProvider from "@/components/MotionProvider";
 import { NO_FLASH_SCRIPT } from "@/lib/theme";
 
 export const metadata: Metadata = {
@@ -39,7 +40,14 @@ export default function RootLayout({
           public routes — the landing page and /login — are named inside the
           gate, so opening one up is a deliberate edit to a short list.
         */}
-        <AuthGate>{children}</AuthGate>
+        {/*
+          Motion policy sits OUTSIDE the gate, so it also covers the login and
+          landing pages — and so that `prefers-reduced-motion` is honoured by
+          framer-motion, which ignores the CSS override in globals.css.
+        */}
+        <MotionProvider>
+          <AuthGate>{children}</AuthGate>
+        </MotionProvider>
       </body>
     </html>
   );

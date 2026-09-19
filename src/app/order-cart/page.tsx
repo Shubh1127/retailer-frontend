@@ -45,6 +45,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import AppShell from "@/components/AppShell";
+import MobileOrderCart from "@/components/MobileOrderCart";
 import NavIcon from "@/components/NavIcons";
 import { useSupplierGate } from "@/components/SupplierGate";
 import Pagination, { PAGE_SIZE } from "@/components/Pagination";
@@ -67,18 +68,11 @@ import {
   type SkippedRow,
 } from "@/lib/api/orderList";
 import { addItems, cartSupplierLabel, supportsCart, type CartSupplier } from "@/lib/api/cart";
-
-/** A file as base64, which is what the EPOS import route takes. */
-async function toBase64(file: File): Promise<string> {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let binary = "";
-  // Chunked: spreading a 200k-element array into String.fromCharCode blows the
-  // argument limit on a real order file.
-  for (let i = 0; i < bytes.length; i += 8192) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-  }
-  return btoa(binary);
-}
+import { toBase64 } from "@/lib/fileEncoding";
+import { cacheKeys } from "@/lib/sessionCache";
+import { useCartEnrichment, withEnrichment } from "@/lib/useCartEnrichment";
+import { useCachedResource } from "@/lib/useCachedResource";
+import { useIsMobile } from "@/lib/useMediaQuery";
 
 /**
  * The tabs, and what each one asks of a line.
@@ -119,12 +113,20 @@ export default function OrderCartPage() {
   const router = useRouter();
   const fileInput = useRef<HTMLInputElement>(null);
 
-  const [cart, setCart] = useState<OrderList | null>(null);
+  /**
+   * WHICH CART THIS IS, and only ever one of them.
+   *
+   * Rendering both and letting `lg:hidden` choose would mount two carts, and
+   * each owns its own fetch, its own optimistic quantity drafts and its own
+   * debounce timers. Two writers for one quantity is a race nobody can debug
+   * from a phone, so the viewport decides which one exists.
+   */
+  const isMobile = useIsMobile();
+
   const [skipped, setSkipped] = useState<SkippedRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [tab, setTab] = useState<TabId>("all");
   const [page, setPage] = useState(1);
 
@@ -148,36 +150,70 @@ export default function OrderCartPage() {
   const [addedQuantities, setAddedQuantities] = useState<Record<number, number>>({});
   const [comparedSignature, setComparedSignature] = useState<string | null>(null);
 
-  const load = useCallback(
-    async (opts: { passive?: boolean } = {}) => {
-      try {
-        const source = TABS.find((entry) => entry.id === tab)?.source;
-        const loaded = await getOrderList({
-          ...opts,
-          ...(source ? { source } : {}),
-          page,
-          pageSize: PAGE_SIZE,
-        });
-        setCart(loaded);
-        /**
-         * PRICES SURVIVE A REFRESH, because they come back with the cart.
-         * The server applies the three-hour rule before handing these over,
-         * so anything here is current enough to show.
-         */
-        setPrices(Object.fromEntries((loaded.pricing ?? []).map((line) => [line.lineId, line])));
-        setError(null);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not load your order cart");
-      } finally {
-        setLoading(false);
-      }
+  /**
+   * ── THIS PAGE OF THE CART, REMEMBERED FOR THE LENGTH OF THIS TAB ──────────
+   *
+   * Keyed by tab AND page, so switching either shows that view's own rows
+   * rather than the last one's while the new ones load.
+   *
+   * `enabled` is the guard that used to be an early `return` inside the effect:
+   * the desktop tree's hooks still run on a phone — hooks cannot be conditional
+   * — and without it every phone load would fetch a page of a cart that
+   * `MobileOrderCart` is already fetching in full. `matchMedia` is read as well
+   * as `isMobile` because the hook starts false on the first commit by design,
+   * and the dependency keeps a desktop window resized narrow and back working.
+   */
+  const onDesktop =
+    !isMobile &&
+    (typeof window === "undefined" || !window.matchMedia("(max-width: 1023px)").matches);
+
+  /**
+   * One reader for this page of the cart.
+   *
+   * `passive` travels because it is not decoration: it marks a read caused by
+   * something OTHER than the person at this screen, so an unattended iPad does
+   * not keep its own session alive on another device's activity. Both the
+   * background revalidation and the re-read after a basket write go through
+   * here, so neither can drift from the other's parameters.
+   *
+   * The order now, the pictures after — see `useCartEnrichment`. A page is only
+   * ten lines, but those ten still cost ten catalogue lookups before anything
+   * could be drawn.
+   */
+  const fetchCartPage = useCallback(
+    (opts: { passive?: boolean } = {}) => {
+      const source = TABS.find((entry) => entry.id === tab)?.source;
+      return getOrderList({
+        ...opts,
+        ...(source ? { source } : {}),
+        page,
+        pageSize: PAGE_SIZE,
+        enrich: "none",
+      });
     },
-    [page, tab],
+    [tab, page],
   );
 
+  const resource = useCachedResource<OrderList>(
+    cacheKeys.orderCart(tab, page),
+    () => fetchCartPage(),
+    { enabled: onDesktop, onError: (message) => setError(message) },
+  );
+
+  const cart = resource.data ?? null;
+  const loading = resource.loading;
+  /** Every write answers with the whole cart, and every answer is cacheable. */
+  const setCart = resource.commit;
+
+  /**
+   * PRICES RIDE ALONG WITH THE CART, so they are cached with it. The server
+   * applies the three-hour rule before handing these over, so anything here is
+   * current enough to show and a refetch is always in flight behind it.
+   */
   useEffect(() => {
-    void load();
-  }, [load]);
+    if (!cart) return;
+    setPrices(Object.fromEntries((cart.pricing ?? []).map((line) => [line.lineId, line])));
+  }, [cart]);
 
   const run = useCallback(async (key: string, work: () => Promise<OrderList>) => {
     setBusy(key);
@@ -284,7 +320,14 @@ export default function OrderCartPage() {
    * GATED AT COMPARE, NOT AT IMPORT.
    */
   const gate = useSupplierGate();
-  const lines = useMemo(() => cart?.lines ?? [], [cart]);
+  const storedLines = useMemo(() => cart?.lines ?? [], [cart]);
+
+  /** Merged on as it arrives, and kept outside `cart` so writes cannot clear it. */
+  const enrichment = useCartEnrichment(storedLines);
+  const lines = useMemo(
+    () => storedLines.map((line) => withEnrichment(line, enrichment[line.id])),
+    [storedLines, enrichment],
+  );
   const currentSignature = useMemo(() => cartSignature(lines), [lines]);
 
   useEffect(() => {
@@ -377,7 +420,7 @@ export default function OrderCartPage() {
         await removeOrderListLine(lineId);
       }
       if (acceptedLineIds.size > 0) {
-        await load({ passive: true });
+        setCart(await fetchCartPage({ passive: true }));
       }
       setNotice(
         `${added} line${added === 1 ? "" : "s"} sent to supplier baskets${failed ? `, ${failed} failed` : ""}`,
@@ -387,7 +430,7 @@ export default function OrderCartPage() {
     } finally {
       setBusy(null);
     }
-  }, [lines, prices, addedQuantities, load]);
+  }, [lines, prices, addedQuantities, fetchCartPage, setCart]);
 
   const addLineToBasket = useCallback(
     async (line: OrderListLine) => {
@@ -419,7 +462,7 @@ export default function OrderCartPage() {
         );
         if (accepted) {
           await removeOrderListLine(line.id);
-          await load({ passive: true });
+          setCart(await fetchCartPage({ passive: true }));
         }
         setNotice(
           `${result.added + result.updated} line${result.added + result.updated === 1 ? "" : "s"} added to ${cartSupplierLabel(priced.best!.supplierId)}`,
@@ -430,7 +473,7 @@ export default function OrderCartPage() {
         setBusy(null);
       }
     },
-    [prices, addedQuantities, load],
+    [prices, addedQuantities, fetchCartPage, setCart],
   );
 
   const price = useCallback(async () => {
@@ -488,6 +531,18 @@ export default function OrderCartPage() {
     const best = prices[line.id]?.best;
     return Boolean(best && supportsCart(best.supplierId) && line.cases > (addedQuantities[line.id] ?? 0));
   });
+
+  /**
+   * Everything above this line is hooks, so the early return cannot change how
+   * many of them run. Everything below is the desktop cart.
+   */
+  if (isMobile) {
+    return (
+      <AppShell active="Order cart">
+        <MobileOrderCart />
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell active="Order cart">
@@ -646,7 +701,9 @@ export default function OrderCartPage() {
           )}
         </div>
 
-        {!loading && visible.length === 0 ? (
+        {loading ? (
+          <CartSkeleton />
+        ) : visible.length === 0 ? (
           <EmptyView tab={tab} onImport={() => fileInput.current?.click()} />
         ) : (
           <ul className="divide-y divide-line">
@@ -700,6 +757,64 @@ export default function OrderCartPage() {
         </p>
       )}
     </AppShell>
+  );
+}
+
+/**
+ * The cart's shape while it is still arriving.
+ *
+ * A skeleton of the REAL row rather than the word "Loading": the 76px
+ * thumbnail, the identity block, and the four supplier columns that
+ * `ProductResultCard` draws. Matching the height is the point — this card used
+ * to render as an empty bordered box that filled in all at once, which moved
+ * everything below it.
+ *
+ * Four rows rather than the ten a page holds. Ten screenfuls of grey bars
+ * overstates how long this takes and turns a fast load into something that
+ * looks broken.
+ */
+function CartSkeleton() {
+  return (
+    <>
+      <span role="status" className="sr-only">
+        Loading your order cart…
+      </span>
+
+      <div aria-hidden="true" className="animate-pulse divide-y divide-line">
+        {[0, 1, 2, 3].map((row) => (
+          <div key={row} className="flex items-start gap-3 p-3">
+            <div className="h-[76px] w-[76px] shrink-0 rounded-lg bg-canvas" />
+
+            <div className="min-w-0 flex-1">
+              <div
+                className="h-3.5 rounded bg-canvas"
+                style={{ width: `${[78, 62, 70, 55][row]}%` }}
+              />
+              <div className="mt-2 h-2.5 w-32 rounded bg-canvas" />
+              <div className="mt-1.5 h-2.5 w-20 rounded bg-canvas" />
+              <div className="mt-2 h-4 w-24 rounded bg-canvas" />
+            </div>
+
+            {/* The four supplier columns. */}
+            <div className="grid min-w-0 flex-[2.6] grid-cols-4 gap-1.5">
+              {[0, 1, 2, 3].map((column) => (
+                <div key={column} className="rounded-md border border-line bg-canvas/40 px-2 py-1.5">
+                  <div className="h-2.5 w-12 rounded bg-canvas" />
+                  <div className="mt-2 h-3 w-10 rounded bg-canvas" />
+                </div>
+              ))}
+            </div>
+
+            <div className="flex shrink-0 items-center gap-1">
+              <div className="h-7 w-7 rounded-md bg-canvas" />
+              <div className="h-7 w-10 rounded-md bg-canvas" />
+              <div className="h-7 w-7 rounded-md bg-canvas" />
+              <div className="ml-2 h-8 w-8 rounded-lg bg-canvas" />
+            </div>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 

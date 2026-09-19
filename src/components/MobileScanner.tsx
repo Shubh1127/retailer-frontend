@@ -101,8 +101,6 @@ export interface MobileScannerProps {
   onScan: (code: string) => void;
   cart: ScanCart | null;
   onQuantity: (line: ScanLine, next: number) => void;
-  onFetchPrices: () => Promise<void>;
-  pricing: boolean;
   /** The most recent thing the page wants said, verbatim. */
   message?: string;
 }
@@ -113,8 +111,6 @@ export default function MobileScanner({
   onScan,
   cart,
   onQuantity,
-  onFetchPrices,
-  pricing,
   message,
 }: MobileScannerProps) {
   const [sheet, setSheet] = useState<Sheet>("closed");
@@ -159,7 +155,6 @@ export default function MobileScanner({
   }, [onScan]);
 
   const lines = cart?.lines ?? [];
-  const priced = lines.filter((line) => line.best).length;
 
   // ---- The camera ----------------------------------------------------------
   useEffect(() => {
@@ -511,9 +506,7 @@ export default function MobileScanner({
                   {lines.length} scanned
                 </p>
                 <p className="text-[12px] text-ink-soft">
-                  {priced > 0
-                    ? `${priced} priced · prices are ex-VAT per case`
-                    : "Prices are fetched when you ask — nothing has been sent to a supplier"}
+                  Already in your order cart — prices are fetched there
                 </p>
               </div>
 
@@ -545,31 +538,25 @@ export default function MobileScanner({
               className="border-t border-line p-3"
               style={{ paddingBottom: "calc(0.75rem + env(safe-area-inset-bottom))" }}
             >
+              {/*
+                NO PRICING HERE, and none on the page behind it either.
+                Everything scanned is already in the order cart, which is where
+                prices are fetched. This button stops the camera and goes there
+                — closing first releases the video track and the torch, which
+                would otherwise stay lit while somebody read a list.
+              */}
               <button
                 type="button"
-                disabled={pricing || lines.length === 0}
-                onClick={() => {
-                  /**
-                   * LEAVE THE SCANNER, then fetch.
-                   *
-                   * Reading and comparing prices is a different job from
-                   * scanning: it wants the whole screen, the supplier columns
-                   * and the Add-to-basket controls the scan page already has.
-                   * Growing this sheet to full height would be a second, worse
-                   * copy of that page rendered over a camera nobody is aiming
-                   * any more — and the camera would go on holding the torch and
-                   * the video track while somebody read prices.
-                   *
-                   * Closing first also stops the stream immediately. The fetch
-                   * continues on the page, which shows its own progress.
-                   */
-                  onClose();
-                  void onFetchPrices();
-                }}
-                className="w-full rounded-full bg-teal-600 py-3 text-[14px] font-medium text-white disabled:opacity-40"
+                onClick={onClose}
+                className="w-full rounded-full bg-teal-600 py-3 text-[14px] font-medium text-white"
               >
-                {pricing ? "Fetching live prices…" : "Fetch live prices"}
+                Done scanning
               </button>
+              <p className="mt-2 text-center text-[11.5px] text-ink-faint">
+                {lines.length === 0
+                  ? "Nothing scanned yet"
+                  : `${lines.length} product${lines.length === 1 ? "" : "s"} in your order cart`}
+              </p>
             </div>
           </motion.div>
         )}
@@ -628,37 +615,6 @@ function SheetRow({
         </div>
       </div>
 
-      {/* Prices only once they are live. A catalogue price here would be
-          indistinguishable from one a supplier quoted today. */}
-      {suppliers.some((offer) => offer.exVatCasePrice !== undefined) && (
-        <ul className="mt-2 space-y-0.5 rounded-lg bg-canvas p-2">
-          {suppliers.map((offer) => {
-            const best =
-              line.best?.supplierId === offer.supplierId &&
-              line.best?.supplierSku === offer.supplierSku;
-
-            return (
-              <li
-                key={`${offer.supplierId}:${offer.supplierSku}`}
-                className="flex items-baseline justify-between gap-2 text-[12px]"
-              >
-                <span className={best ? "font-medium text-good-600" : "text-ink-soft"}>
-                  {cartSupplierLabel(offer.supplierId)}
-                </span>
-                <span className={`nums ${best ? "font-medium text-good-600" : "text-ink"}`}>
-                  {offer.exVatCasePrice !== undefined ? (
-                    eur(offer.exVatCasePrice)
-                  ) : offer.repriced === false ? (
-                    <span className="text-red-600">not found</span>
-                  ) : (
-                    <span className="text-ink-faint">—</span>
-                  )}
-                </span>
-              </li>
-            );
-          })}
-        </ul>
-      )}
     </li>
   );
 }

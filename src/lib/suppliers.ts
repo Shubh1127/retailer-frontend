@@ -62,3 +62,36 @@ export function compareSuppliers(a: string | undefined, b: string | undefined): 
 export function bySupplierOrder<T>(items: readonly T[], idOf: (item: T) => string | undefined): T[] {
   return [...items].sort((a, b) => compareSuppliers(idOf(a), idOf(b)));
 }
+
+/**
+ * ── THE FOUR THINGS A BUYER SEES ────────────────────────────────────────────
+ *
+ * Five ids, four wholesalers. Barry Group holds two accounts — ambient and
+ * chill — and they are one company to the person ordering, so they collapse
+ * into one group rather than taking two of the four slots a phone has room for.
+ *
+ * Shared between `ProductResultCard` (the desktop grid) and the mobile product
+ * sheet. When this list lived in the component, the two screens disagreed about
+ * whether Barry was one row or two, which made the same product look like two
+ * different products depending on the width of the window.
+ */
+export const SUPPLIER_COLUMNS: readonly { label: string; ids: readonly string[] }[] = [
+  { label: "Musgrave", ids: ["musgrave"] },
+  { label: "O'Reilly", ids: ["oreilly"] },
+  { label: "Barry Group", ids: ["barrygroup-ambient", "barrygroup-chill"] },
+  { label: "Kadona", ids: ["kadona"] },
+];
+
+/**
+ * A stable accent per wholesaler, for the dot beside its name.
+ *
+ * Deliberately NOT the status palette — these say "which supplier", never
+ * "good" or "bad". Reusing good/warn here would make Musgrave look like a pass
+ * and Kadona like a warning on a screen where every row is neutral.
+ */
+export const SUPPLIER_ACCENTS: Readonly<Record<string, string>> = {
+  Musgrave: "#0F766E",
+  "O'Reilly": "#D97706",
+  "Barry Group": "#059669",
+  Kadona: "#3A4048",
+};

@@ -14,6 +14,7 @@ import ThemeToggle from "@/components/ThemeToggle";
 import MobileTabBar from "@/components/MobileTabBar";
 import FirstLoginRedirect from "@/components/FirstLoginRedirect";
 import { forgetCachedMe, readCachedMe, writeCachedMe } from "@/lib/cachedMe";
+import { clearCache } from "@/lib/sessionCache";
 import NavIcon, { type NavIconName } from "@/components/NavIcons";
 
 /**
@@ -228,6 +229,13 @@ function AccountMenu({ me }: { me: MeResponse["user"] }) {
               // name while their own is being fetched. Cleared before the sign
               // out rather than after, so a redirect cannot outrun it.
               forgetCachedMe();
+              /**
+               * And every page's cached data with it. sessionStorage is per
+               * tab, so this is the same tab the next person would sign in on —
+               * they must not see the last one's order cart for a frame while
+               * their own loads.
+               */
+              clearCache();
               // Reported BEFORE the sign-out: afterwards there is no token left to
               // authenticate the report with, and an unauthenticated one is dropped.
               await reportSession("signed-out");

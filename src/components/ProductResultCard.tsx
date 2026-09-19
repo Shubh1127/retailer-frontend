@@ -22,7 +22,7 @@
  */
 
 import StockLine from "@/components/StockLine";
-import { bySupplierOrder } from "@/lib/suppliers";
+import { bySupplierOrder, SUPPLIER_COLUMNS } from "@/lib/suppliers";
 import { eur } from "@/lib/mock-data";
 
 /** One wholesaler's answer about one product. */
@@ -99,13 +99,6 @@ function Pack({ offer }: { offer: ProductResultOffer }) {
   if (parts.length === 0) return null;
   return <span className="text-ink-faint">{parts.join(" ")}</span>;
 }
-
-const SUPPLIER_COLUMNS: { label: string; ids: string[] }[] = [
-  { label: "Musgrave", ids: ["musgrave"] },
-  { label: "O'Reilly", ids: ["oreilly"] },
-  { label: "Barry Group", ids: ["barrygroup-ambient", "barrygroup-chill"] },
-  { label: "Kadona", ids: ["kadona"] },
-];
 
 function OfferAvailability({ offer }: { offer: ProductResultOffer }) {
   if (offer.inStock !== undefined) {

@@ -6,10 +6,23 @@
  * WHAT MAKES THIS FAST, AND WHY IT HAD TO BE DESIGNED FOR
  *
  * Somebody walking a shop produces a beep a second. Nothing in that loop may
- * wait on a supplier: a scan is one master-table read and one insert, and the
- * prices come later, once, when they press the button saying they have
- * finished. A scanner that stops to ask four wholesalers what something costs
- * falls behind the person holding it within ten paces.
+ * wait on a supplier: a scan is one master-table read and one insert. A scanner
+ * that stops to ask four wholesalers what something costs falls behind the
+ * person holding it within ten paces.
+ *
+ * THIS SCREEN COLLECTS. IT DOES NOT PRICE.
+ *
+ * A scanned barcode goes straight into the CENTRAL ORDER CART —
+ * `scanCartCompat` merges it with `source: 'scan'`, so `/api/scan/cart` is that
+ * same cart filtered by origin rather than a list of its own. There is nothing
+ * to "add" afterwards and no basket to send from here.
+ *
+ * So there is no price on this page: no live fetch, no comparison, no
+ * add-to-baskets. Those are asked of the order cart, where the products already
+ * are. Anything shown here about a supplier is about IDENTITY — who stocks this
+ * barcode — never about money, because the only price available without
+ * contacting anybody is the last sync's, and on screen that is
+ * indistinguishable from one a wholesaler quoted today.
  *
  * Even a database round trip is too slow to render against. The scanned
  * barcode is therefore drawn BEFORE the request goes out — a pending row
@@ -44,20 +57,21 @@
  * The short window below only covers the gap before the cart has caught up.
  */
 
-import { Fragment, useCallback, useEffect, useRef, useState } from "react";
-import StockLine from "@/components/StockLine";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 import AppShell from "@/components/AppShell";
 import MobileScanner from "@/components/MobileScanner";
-import ScanCard from "@/components/ScanProductCard";
+import MobileScanList from "@/components/MobileScanList";
+import { cartSupplierLabel } from "@/lib/api/cart";
+import { bySupplierOrder } from "@/lib/suppliers";
+import { cacheKeys } from "@/lib/sessionCache";
+import { useCachedResource } from "@/lib/useCachedResource";
 import { useIsMobile } from "@/lib/useMediaQuery";
 import { useSupplierGate } from "@/components/SupplierGate";
 import ProductGlyph from "@/components/ProductGlyph";
 import Pagination, { usePagination } from "@/components/Pagination";
 import { ApiError } from "@/lib/api/client";
-import { cartSupplierLabel, supportsCart, addItems, type CartSupplier } from "@/lib/api/cart";
-import { eur } from "@/lib/mock-data";
 import {
   classifyBurst,
   isBarcodeKey,
@@ -69,7 +83,6 @@ import { createBarcodeReader, type BarcodeReader } from "@/lib/barcodeDetector";
 import {
   clearScanCart,
   discoverScanLine,
-  fetchScanPrices,
   getScanCart,
   recordScan,
   removeScanLine,
@@ -119,7 +132,6 @@ const QUANTITY_FLUSH_MS = 400;
 type Feedback = { kind: "ok" | "miss" | "error"; text: string; at: number };
 
 export default function ScanPage() {
-  const [cart, setCart] = useState<ScanCart | null>(null);
   const [typed, setTyped] = useState("");
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   /**
@@ -130,8 +142,6 @@ export default function ScanPage() {
    * plainly that it is working rather than blanking the screen and hoping.
    */
   const [clearing, setClearing] = useState(false);
-  const [pricing, setPricing] = useState(false);
-  const [adding, setAdding] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
   /**
    * Which scanner the camera button opens.
@@ -237,6 +247,46 @@ export default function ScanPage() {
    */
   const scanStream = useRef(createCameraScanStream());
 
+  // A highlight is an acknowledgement, not a selection — it fades by itself.
+  useEffect(() => {
+    if (highlight === null) return;
+    const timer = setTimeout(() => setHighlight(null), 1800);
+    return () => clearTimeout(timer);
+  }, [highlight]);
+
+  // ---- The cart ------------------------------------------------------------
+  /**
+   * ── WHAT WAS SCANNED, REMEMBERED FOR THE LENGTH OF THIS TAB ───────────────
+   *
+   * Coming back from the order cart paints the list from this tab's session
+   * cache on the first render and checks with the server behind it.
+   *
+   * THE CACHE ONLY EVER HOLDS WHAT THE SERVER AGREED TO, and this page is the
+   * one where that distinction does real work: a quantity moves under the thumb
+   * 400ms before the write goes out, and that optimistic value is shown with
+   * `show` — state only. It reaches the cache through `persist`, and only once
+   * the write has come back. A failed write is rolled back by re-reading, so
+   * caching the optimistic value would have meant remembering a number the
+   * server rejected.
+   */
+  const resource = useCachedResource<ScanCart>(
+    cacheKeys.scanCart,
+    async () => (await getScanCart()).cart,
+    {
+      onError: (message) =>
+        setFeedback({ kind: "error", text: message || "Could not load the cart", at: Date.now() }),
+    },
+  );
+
+  const cart = resource.data ?? null;
+  /** The server answered with a whole cart: state and cache. */
+  const commitCart = resource.commit;
+  /** The UI is running ahead: state only. See the note above. */
+  const setCart = resource.show;
+  const load = resource.refresh;
+  /** Cache what is on screen, once a write has confirmed it. */
+  const persistCart = resource.persist;
+
   /**
    * The cart, readable from inside `submitCode` without re-creating it.
    *
@@ -250,30 +300,6 @@ export default function ScanPage() {
     cartRef.current = cart;
   }, [cart]);
 
-  // A highlight is an acknowledgement, not a selection — it fades by itself.
-  useEffect(() => {
-    if (highlight === null) return;
-    const timer = setTimeout(() => setHighlight(null), 1800);
-    return () => clearTimeout(timer);
-  }, [highlight]);
-
-  // ---- The cart ------------------------------------------------------------
-  const load = useCallback(async () => {
-    try {
-      const result = await getScanCart();
-      setCart(result.cart);
-    } catch (error) {
-      setFeedback({
-        kind: "error",
-        text: error instanceof ApiError ? error.message : "Could not load the cart",
-        at: Date.now(),
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
 
   // ---- One scan ------------------------------------------------------------
   const submitCode = useCallback(
@@ -614,95 +640,110 @@ export default function ScanPage() {
         const write =
           quantity <= 0 ? removeScanLine(line.id) : setScanQuantity(line.id, quantity);
 
-        void write.catch((error) =>
-          restore(
-            error instanceof ApiError
-              ? `Could not update ${previous.name ?? previous.scannedCode}: ${error.message}`
-              : `Could not update ${previous.name ?? previous.scannedCode}`,
-          ),
-        );
+        void write
+          .then(() => {
+            /**
+             * ONLY NOW is the optimistic value something the server agrees
+             * with. These writes answer `{ ok: true }` rather than with a cart,
+             * so what is cached is the state already on screen — which the
+             * response has just made true. Caching it at the top of this
+             * function, when it was still a guess, would have meant a failed
+             * write being remembered as a success.
+             */
+            persistCart();
+          })
+          .catch((error) =>
+            restore(
+              error instanceof ApiError
+                ? `Could not update ${previous.name ?? previous.scannedCode}: ${error.message}`
+                : `Could not update ${previous.name ?? previous.scannedCode}`,
+            ),
+          );
       }, QUANTITY_FLUSH_MS),
     );
-  }, [load]);
-
-  const price = async () => {
-    setPricing(true);
-    setFeedback(null);
-    try {
-      const result = await fetchScanPrices();
-      setCart(result.cart);
-      setFeedback({
-        kind: "ok",
-        text: `Priced ${result.cart.pricedSkus ?? 0} of ${result.cart.requestedSkus ?? 0} supplier products`,
-        at: Date.now(),
-      });
-    } catch (error) {
-      setFeedback({
-        kind: "error",
-        text: error instanceof ApiError ? error.message : "Could not fetch prices",
-        at: Date.now(),
-      });
-    } finally {
-      setPricing(false);
-    }
-  };
+  }, [load, persistCart]);
 
   /**
-   * Send every priced line to the cheapest supplier's basket.
+   * Empty the scan list.
    *
-   * Only lines that HAVE a live price, and only suppliers with a real cart
-   * integration. A line priced from the catalogue alone is not offered: the
-   * basket would be filled on a number nobody has stood behind today.
+   * REMOVES ONLY WHAT WAS SCANNED. `clearOrderCartSource(user, 'scan')` takes
+   * the scanned lines out of the central cart and leaves anything collected
+   * another way — an import, a search — exactly where it was.
    */
-  const addAllToBaskets = async () => {
-    if (!cart) return;
-    setAdding(true);
-    setFeedback(null);
-
-    const bySupplier = new Map<string, { sku: string; quantity: number; name?: string }[]>();
-    for (const line of cart.lines) {
-      if (!line.best || !supportsCart(line.best.supplierId)) continue;
-      const list = bySupplier.get(line.best.supplierId) ?? [];
-      list.push({
-        sku: line.best.supplierSku,
-        quantity: line.quantity,
-        ...(line.product?.name ? { name: line.product.name } : {}),
-      });
-      bySupplier.set(line.best.supplierId, list);
-    }
-
-    try {
-      let added = 0;
-      let failed = 0;
-      for (const [supplierId, items] of bySupplier) {
-        const result = await addItems(items, supplierId as CartSupplier);
-        added += result.added + result.updated;
-        failed += result.failed;
-      }
-      setFeedback({
-        kind: failed > 0 ? "miss" : "ok",
-        text: `${added} line${added === 1 ? "" : "s"} sent to supplier baskets${
-          failed > 0 ? `, ${failed} failed` : ""
-        }`,
-        at: Date.now(),
-      });
-    } catch (error) {
-      setFeedback({
-        kind: "error",
-        text: error instanceof ApiError ? error.message : "Could not reach the baskets",
-        at: Date.now(),
-      });
-    } finally {
-      setAdding(false);
-    }
-  };
+  const clearAll = useCallback(() => {
+    setClearing(true);
+    void clearScanCart()
+      .then((result) => {
+        // Nothing is in the list any more, so nothing is a repeat.
+        accepted.current.clear();
+        commitCart(result.cart);
+      })
+      .catch((error) =>
+        setFeedback({
+          kind: "error",
+          text: error instanceof ApiError ? error.message : "Could not clear the list",
+          at: Date.now(),
+        }),
+      )
+      .finally(() => setClearing(false));
+  }, []);
 
   const lines = cart?.lines ?? [];
   const paged = usePagination(lines, { resetKey: lines.length });
-  const priced = lines.filter((line) => line.best).length;
-  const readyToOrder = lines.filter(
-    (line) => line.best && supportsCart(line.best.supplierId),
-  ).length;
+
+  /**
+   * Everything above is hooks, so this early return cannot change how many of
+   * them run. Below it is the desktop scan page.
+   *
+   * ONE TREE, NOT TWO. The camera is the reason: two mounted scanners open two
+   * video streams and the second `getUserMedia` either fails or steals the
+   * first one's track. The list follows the same rule so there is only ever one
+   * owner of the quantity drafts.
+   */
+  if (isMobile) {
+    return (
+      <AppShell active="Scan">
+        <MobileScanList
+          lines={lines}
+          pending={pending}
+          discovering={discovering}
+          highlight={highlight}
+          loading={cart === null}
+          typed={typed}
+          onTyped={setTyped}
+          onSubmit={() => {
+            // Nothing is recorded, looked up or sent when the gate refuses.
+            if (!gate.guard()) return;
+            void submitCode(typed);
+            setTyped("");
+          }}
+          inputRef={inputRef}
+          scannerSeen={scannerSeen}
+          cameraOn={cameraOn}
+          onCamera={() => {
+            setCameraError(null);
+            setCameraOn((current) => !current);
+          }}
+          cameraError={cameraError}
+          {...(feedback ? { feedback: { kind: feedback.kind, text: feedback.text } } : { feedback: null })}
+          onQuantity={changeQuantity}
+          onClear={clearAll}
+          clearing={clearing}
+        />
+
+        {gate.modal}
+
+        <MobileScanner
+          open={cameraOn && isMobile}
+          onClose={() => setCameraOn(false)}
+          onScan={(code) => void submitCode(code)}
+          cart={cart}
+          onQuantity={changeQuantity}
+          {...(feedback ? { message: feedback.text } : {})}
+        />
+      </AppShell>
+    );
+  }
 
   return (
     <AppShell active="Scan">
@@ -819,59 +860,25 @@ export default function ScanPage() {
                 {cart.unrecognised} unrecognised
               </span>
             )}
-            {priced > 0 && (
-              <span className="ml-2 rounded bg-good-50 px-1.5 py-0.5 text-[11.5px] font-medium text-good-600">
-                {priced} priced
-              </span>
-            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              disabled={pricing || lines.length === 0}
-              onClick={() => void price()}
-              className="rounded-md bg-teal-600 px-3.5 py-1.5 text-[12.5px] font-medium text-white hover:bg-teal-700 disabled:opacity-40"
-            >
-              {pricing ? "Fetching live prices…" : "Fetch live prices"}
-            </button>
-            <button
-              type="button"
-              disabled={adding || readyToOrder === 0}
-              onClick={() => void addAllToBaskets()}
-              title={
-                readyToOrder === 0
-                  ? "Fetch live prices first — nothing goes into a basket on a catalogue price"
-                  : `Add ${readyToOrder} lines to their cheapest supplier's basket`
-              }
-              className="rounded-md border border-teal-600 px-3.5 py-1.5 text-[12.5px] font-medium text-teal-700 hover:bg-teal-50 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {adding ? "Adding…" : `Add ${readyToOrder} to baskets`}
-            </button>
+            {/* PRICES ARE NOT ASKED FOR HERE. Everything scanned is already in
+                the order cart, and that is where a comparison is run — see the
+                page comment. The one button is the way through to it. */}
+            {lines.length > 0 && (
+              <Link
+                href="/order-cart?tab=scan"
+                className="rounded-md bg-teal-600 px-3.5 py-1.5 text-[12.5px] font-medium text-white hover:bg-teal-700"
+              >
+                Go to order cart
+              </Link>
+            )}
             {lines.length > 0 && (
               <button
                 type="button"
                 disabled={clearing}
-                onClick={() => {
-                  setClearing(true);
-                  void clearScanCart()
-                    .then((result) => {
-                      // Nothing is in the list any more, so nothing is a repeat.
-                      accepted.current.clear();
-                      setCart(result.cart);
-                    })
-                    .catch((error) =>
-                      setFeedback({
-                        kind: "error",
-                        text:
-                          error instanceof ApiError
-                            ? error.message
-                            : "Could not clear the list",
-                        at: Date.now(),
-                      }),
-                    )
-                    .finally(() => setClearing(false));
-                }}
+                onClick={clearAll}
                 className="rounded-md border border-line px-3 py-1.5 text-[12.5px] text-ink-soft hover:bg-canvas hover:text-ink disabled:opacity-40"
               >
                 {clearing ? "Clearing…" : "Clear"}
@@ -902,25 +909,14 @@ export default function ScanPage() {
             ))}
 
             {paged.items.map((line) => {
-              /**
-               * BOTH LAYOUTS ARE RENDERED and CSS decides which is seen —
-               * unlike the camera, where two mounted copies would open two
-               * video streams. Markup is free, and a `useMediaQuery` here would
-               * mean the server's HTML and the browser's first paint disagreed
-               * about which one exists.
-               */
-              const shared = {
-                line,
-                highlighted: highlight === line.id,
-                discovering: discovering.includes(line.id),
-                onQuantity: (next: number) => void changeQuantity(line, next),
-              };
-
               return (
-                <Fragment key={line.id}>
-                  <ScanCard {...shared} />
-                  <ScanRow {...shared} />
-                </Fragment>
+                <ScanRow
+                  key={line.id}
+                  line={line}
+                  highlighted={highlight === line.id}
+                  discovering={discovering.includes(line.id)}
+                  onQuantity={(next: number) => void changeQuantity(line, next)}
+                />
               );
             })}
           </ul>
@@ -940,8 +936,6 @@ export default function ScanPage() {
         onScan={(code) => void submitCode(code)}
         cart={cart}
         onQuantity={changeQuantity}
-        onFetchPrices={price}
-        pricing={pricing}
         {...(feedback ? { message: feedback.text } : {})}
       />
     </AppShell>
@@ -1050,86 +1044,22 @@ function ScanRow({
           {product?.sizeText && ` · ${product.sizeText}`}
         </p>
 
-        {/* Every supplier that stocks it, with the code and the page. NO
-            catalogue price is rendered — until Fetch runs, the price column is
-            deliberately empty rather than showing a figure from the last sync,
-            which on screen is indistinguishable from a current one. */}
+        {/*
+          WHO STOCKS IT, AND NOTHING ABOUT MONEY.
+
+          This screen collects; the order cart prices. A price here would have
+          to come from the last catalogue sync, which on screen is
+          indistinguishable from one a supplier quoted today — and the whole
+          reason prices live on the cart is that fetching a real one takes
+          seconds per wholesaler.
+        */}
         {product && product.suppliers.length > 0 && (
-          <ul className="mt-1.5 space-y-0.5">
-            {product.suppliers.map((offer) => {
-              const isBest =
-                line.best?.supplierId === offer.supplierId &&
-                line.best?.supplierSku === offer.supplierSku;
-
-              return (
-                <li
-                  key={`${offer.supplierId}:${offer.supplierSku}`}
-                  className="flex flex-wrap items-baseline gap-x-2 text-[11.5px]"
-                >
-                  <span
-                    className={`w-40 shrink-0 ${isBest ? "font-medium text-good-600" : "text-ink-soft"}`}
-                  >
-                    {cartSupplierLabel(offer.supplierId)}
-                    {offer.isSingle && (
-                      <span className="ml-1 text-amber-700" title="Break-pack single">
-                        single
-                      </span>
-                    )}
-                  </span>
-
-                  <span className="nums w-20 shrink-0 text-right">
-                    {offer.exVatCasePrice !== undefined ? (
-                      <span className={isBest ? "font-medium text-good-600" : "text-ink"}>
-                        {eur(offer.exVatCasePrice)}
-                      </span>
-                    ) : offer.repriced === false ? (
-                      <span className="text-red-600" title="The supplier could not be reached">
-                        not found
-                      </span>
-                    ) : (
-                      <span className="text-ink-faint">—</span>
-                    )}
-                    {/* UNDER THE PRICE. A cheaper supplier that did not win is
-                        confusing without it — this is the reason. */}
-                    <StockLine
-                      inStock={offer.inStock}
-                      {...(offer.availabilityText
-                        ? { availabilityText: offer.availabilityText }
-                        : {})}
-                      supplierName={cartSupplierLabel(offer.supplierId)}
-                    />
-                  </span>
-
-                  <span className="nums text-ink-faint">{offer.supplierSku}</span>
-
-                  {offer.productUrl && (
-                    <a
-                      href={offer.productUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="text-link hover:underline"
-                    >
-                      view ↗
-                    </a>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
-
-        {/* Once priced, who is cheapest and what the others wanted. Before
-            that, nothing — a catalogue price here would be indistinguishable
-            from a current one. */}
-        {/* No catalogue held this barcode; it was found by asking the suppliers
-            directly. One price and no comparison — which is the truth about it,
-            not a gap in the answer. */}
-        {line.liveOnly && line.best && (
-          <p className="mt-1 text-[11.5px]">
-            <span className="rounded bg-sky-50 px-1.5 py-0.5 font-medium text-sky-700">
-              found live at {cartSupplierLabel(line.best.supplierId)} ·{" "}
-              {eur(line.best.exVatCasePrice)}
-            </span>
+          <p className="mt-1 text-[11.5px] text-ink-faint">
+            Stocked by{" "}
+            {bySupplierOrder(product.suppliers, (offer) => offer.supplierId)
+              .map((offer) => cartSupplierLabel(offer.supplierId))
+              .filter((label, index, all) => all.indexOf(label) === index)
+              .join(", ")}
           </p>
         )}
       </div>

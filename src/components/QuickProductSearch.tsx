@@ -14,11 +14,13 @@
  * is what took searching here from seconds to instant.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 
 import ProductPriceTable from "@/components/ProductPriceTable";
 import ProductSearchBox from "@/components/ProductSearchBox";
+import { cacheKeys, consumeCache, writeCache } from "@/lib/sessionCache";
+import { rememberSearch } from "@/lib/recentSearches";
 import { TableSkeleton } from "@/components/TableSkeleton";
 import { ApiError } from "@/lib/api/client";
 import { searchSupplierListings, type SupplierSearchProduct } from "@/lib/api/endpoint";
@@ -30,8 +32,32 @@ export default function QuickProductSearch() {
   const [status, setStatus] = useState<"idle" | "loading" | "error" | "done">("idle");
   const [message, setMessage] = useState("");
 
-  const submit = async () => {
-    const trimmed = query.trim();
+  /**
+   * The dashboard's own last search, restored for ONE return trip.
+   *
+   * Consumed on read, exactly as `/product-search` does it: coming straight
+   * back finds the results, coming back again finds an empty box. The dashboard
+   * is a starting point, and a starting point that always opens on a stale
+   * question is a worse one.
+   */
+  const restored = useRef(false);
+  useEffect(() => {
+    if (restored.current) return;
+    restored.current = true;
+
+    const previous = consumeCache<{ searched: string; products: SupplierSearchProduct[] }>(
+      cacheKeys.dashboardSearch,
+    );
+    if (!previous) return;
+
+    setQuery(previous.searched);
+    setSearched(previous.searched);
+    setProducts(previous.products);
+    setStatus("done");
+  }, []);
+
+  const submit = async (term?: string) => {
+    const trimmed = (term ?? query).trim();
     if (!trimmed) return;
 
     setStatus("loading");
@@ -42,6 +68,9 @@ export default function QuickProductSearch() {
       const result = await searchSupplierListings(trimmed);
       setProducts(result.products);
       setStatus("done");
+      // Only a search that answered is worth remembering or restoring.
+      rememberSearch(trimmed);
+      writeCache(cacheKeys.dashboardSearch, { searched: trimmed, products: result.products });
     } catch (error) {
       setStatus("error");
       setMessage(error instanceof ApiError ? error.message : "Something went wrong.");
@@ -66,7 +95,7 @@ export default function QuickProductSearch() {
       <ProductSearchBox
         value={query}
         onChange={setQuery}
-        onSubmit={() => void submit()}
+        onSubmit={(term) => void submit(term)}
         busy={status === "loading"}
         className="px-4 py-3"
         tone="canvas"

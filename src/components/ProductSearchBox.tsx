@@ -24,9 +24,27 @@
  * NOTHING GOES OUT UNTIL IT IS SUBMITTED. This box used to search on a 350ms
  * debounce, which fired several searches while somebody typed "birra moretti
  * premium lager" — one per pause long enough to look like a finished word.
+ *
+ * ── RECENT SEARCHES ─────────────────────────────────────────────────────────
+ *
+ * Offered when the field is focused and empty, which is exactly the moment
+ * somebody is deciding what to type. They come from this tab's sessionStorage
+ * and never leave the browser — see `recentSearches`.
+ *
+ * Picking one submits it DIRECTLY rather than filling the box and relying on
+ * the parent's state having updated: `onChange` then `onSubmit` in the same
+ * tick would search for whatever was in the field a moment ago, because the
+ * parent has not re-rendered yet. So `onSubmit` takes the term.
+ *
+ * Dismissal is on blur, DELAYED by a frame. Clicking a suggestion blurs the
+ * input first, and a list that unmounts on blur unmounts before the click it
+ * was blurred by can land.
  */
 
-import { type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+
+import { forgetSearch, readRecentSearches } from "@/lib/recentSearches";
 
 export default function ProductSearchBox({
   value,
@@ -36,11 +54,13 @@ export default function ProductSearchBox({
   placeholder = "Product name, SKU or barcode",
   className = "",
   tone = "surface",
+  recent = true,
   children,
 }: {
   value: string;
   onChange: (next: string) => void;
-  onSubmit: () => void;
+  /** The term is passed when a suggestion was picked. See the header. */
+  onSubmit: (term?: string) => void;
   busy?: boolean;
   placeholder?: string;
   /** Extra classes for the form, for the two screens' different widths. */
@@ -52,13 +72,38 @@ export default function ProductSearchBox({
    * single fixed colour makes the field disappear on one of the two.
    */
   tone?: "surface" | "canvas";
+  /** Offer this tab's recent searches when the field is focused and empty. */
+  recent?: boolean;
   /** Anything that belongs beside the field — a Clear button, say. */
   children?: React.ReactNode;
 }) {
+  const [history, setHistory] = useState<string[]>([]);
+  const [focused, setFocused] = useState(false);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Read after mount, never during render: sessionStorage does not exist on the
+  // server, and the list is not worth a hydration mismatch.
+  useEffect(() => {
+    if (recent) setHistory(readRecentSearches());
+  }, [recent, value]);
+
+  useEffect(() => () => {
+    if (blurTimer.current) clearTimeout(blurTimer.current);
+  }, []);
+
+  const suggestionsOpen = recent && focused && value.trim() === "" && history.length > 0;
+
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!value.trim() || busy) return;
     onSubmit();
+  };
+
+  const pick = (term: string) => {
+    if (blurTimer.current) clearTimeout(blurTimer.current);
+    setFocused(false);
+    onChange(term);
+    onSubmit(term);
   };
 
   return (
@@ -70,6 +115,12 @@ export default function ProductSearchBox({
           type="search"
           value={value}
           onChange={(event) => onChange(event.target.value)}
+          onFocus={() => setFocused(true)}
+          onBlur={() => {
+            // A frame's grace, so a click on a suggestion lands before the list
+            // that carries it unmounts.
+            blurTimer.current = setTimeout(() => setFocused(false), 120);
+          }}
           placeholder={placeholder}
           aria-label={placeholder}
           // Asks a phone keyboard for a "Search" action key. Enter submits
@@ -131,6 +182,52 @@ export default function ProductSearchBox({
             </svg>
           )}
         </button>
+
+        <AnimatePresence>
+          {suggestionsOpen && (
+            <motion.div
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -4 }}
+              transition={{ duration: 0.14 }}
+              className="absolute left-0 right-0 top-full z-30 mt-1 overflow-hidden rounded-md border border-line bg-surface shadow-pop"
+            >
+              <p className="px-3 pb-1 pt-2 text-[10.5px] font-semibold uppercase tracking-wide text-ink-faint">
+                Recent searches
+              </p>
+              <ul>
+                {history.map((term) => (
+                  <li key={term} className="flex items-stretch">
+                    <button
+                      type="button"
+                      // onMouseDown, not onClick: mousedown fires BEFORE the
+                      // input's blur, so the pick is registered even if the
+                      // dismissal timer were ever shortened.
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        pick(term);
+                      }}
+                      className="min-w-0 flex-1 truncate px-3 py-2 text-left text-[13px] text-ink hover:bg-canvas"
+                    >
+                      {term}
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={`Forget ${term}`}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                        setHistory(forgetSearch(term));
+                      }}
+                      className="px-3 text-[13px] text-ink-faint hover:text-ink"
+                    >
+                      ✕
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {children}
