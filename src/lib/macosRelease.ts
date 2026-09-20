@@ -9,8 +9,11 @@
  * one platform could break the other's download link, which is the one thing on
  * this page a retailer cannot work around.
  *
- * Both modules read the SAME `latest.json`. That file holds one entry per
- * platform, so the two coexist without either overwriting the other.
+ * Each platform reads its OWN manifest: Windows `latest.json`, macOS
+ * `latest-macos.json`. A Tauri manifest carries one top-level `version`, so a
+ * shared file would force both platforms to release in lockstep — and would
+ * have told every installed Windows app that a macOS release was an update for
+ * it. Separate files remove the coupling.
  *
  * ── THE ONE REAL DIFFERENCE FROM WINDOWS ────────────────────────────────────
  *
@@ -58,7 +61,7 @@ const RELEASE_BUCKET_URL =
  * bucket not seeded yet). A stale value here is a fallback, not the source of
  * truth — see `getLatestMacosRelease`.
  */
-const FALLBACK_VERSION = process.env.NEXT_PUBLIC_DESKTOP_MACOS_VERSION ?? "1.0.1";
+const FALLBACK_VERSION = process.env.NEXT_PUBLIC_DESKTOP_MACOS_VERSION ?? "1.0.2";
 
 /**
  * macOS builds are not signed with an Apple Developer ID yet, and the page must
@@ -80,7 +83,7 @@ const BETA = process.env.NEXT_PUBLIC_DESKTOP_MACOS_BETA !== "false";
  */
 const ARCHITECTURE = "Apple Silicon (arm64)";
 const TAURI_TARGET = "darwin-aarch64";
-const MANIFEST_URL = `${RELEASE_BUCKET_URL}/latest.json`;
+const MANIFEST_URL = `${RELEASE_BUCKET_URL}/latest-macos.json`;
 const MANIFEST_FETCH_TIMEOUT_MS = 5_000;
 
 export interface MacosRelease {
@@ -136,11 +139,11 @@ interface UpdaterManifest {
  *
  * ── WHY `published` IS CHECKED SEPARATELY FROM `version` ────────────────────
  *
- * `latest.json` carries ONE top-level `version` and a `platforms` map. When
- * only Windows has been published, that top-level version is the Windows
- * version and there is no `darwin-aarch64` key at all. Reading the version
- * alone would render a confident macOS download button pointing at a `.dmg`
- * that was never uploaded — a 404 the retailer cannot diagnose.
+ * The manifest carries a top-level `version` and a `platforms` map. Before the
+ * first macOS release there is no `darwin-aarch64` key at all — and if the file
+ * itself is missing, the fetch simply fails. Reading a version alone would
+ * render a confident macOS download button pointing at a `.dmg` that was never
+ * uploaded — a 404 the retailer cannot diagnose.
  *
  * So the macOS platform entry must EXIST before this reports a published
  * release. When it does not, `published` is false and the page says the macOS
